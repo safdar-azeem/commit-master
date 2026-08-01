@@ -1,6 +1,6 @@
 # Git Commit CLI Toolkit
 
-A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, and sharing changed files.
+A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, sharing changed files, and safe project stashing.
 
 ## Installation
 
@@ -22,13 +22,13 @@ Or with pnpm:
 pnpm add --global commit-master
 ```
 
-One global installation exposes all four commands: `autocommit`, `commitspan`, `gitpaths`, and `gitbundle`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
+One global installation exposes all five commands: `autocommit`, `commitspan`, `gitpaths`, `gitbundle`, and `gitstash`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
 
 ## Visual Studio Code Extension
 
 If you prefer to use this workflow inside Visual Studio Code, install the [Auto Commit Master extension](https://marketplace.visualstudio.com/items?itemName=SafdarAzeem.auto-commit-master) from the Visual Studio Marketplace.
 
-The extension provides the Visual Studio Code experience, while this package provides the `autocommit`, `commitspan`, `gitpaths`, and `gitbundle` terminal commands.
+The extension provides the Visual Studio Code experience, while this package provides the `autocommit`, `commitspan`, `gitpaths`, `gitbundle`, and `gitstash` terminal commands.
 
 ## How to Use
 
@@ -45,6 +45,7 @@ autocommit
 commitspan <duration> <commits-per-day>
 gitpaths
 gitbundle
+gitstash ["stash title"]
 ```
 
 The commands work with the Git repository of the currently opened project.
@@ -62,7 +63,7 @@ Press Enter or answer Yes to initialize Git in the current directory and continu
 
 CI, redirected input, and other non-interactive environments never initialize Git or wait for input. They ask you to initialize Git before running Commit Master. Git identity is never created or changed automatically.
 
-This initialization flow applies to all four commands. After confirmation, the original command continues automatically in the newly initialized repository.
+This initialization flow applies to all five commands. After confirmation, the original command continues automatically in the newly initialized repository.
 
 ## Automatic File Commits
 
@@ -194,6 +195,56 @@ Install wl-copy, xclip, or xsel.
 
 Pressing Ctrl+C exits with status 130 and reports `Copy cancelled.` followed by `The clipboard was not updated.` Commit-specific counts are not shown for clipboard commands.
 
+## Stash Project Changes
+
+Use `gitstash` to save all current repository changes in a new Git stash:
+
+```bash
+gitstash
+```
+
+The default stash title is `Commit Master stash`. Provide one quoted argument to use an exact custom title containing spaces, Unicode, or punctuation:
+
+```bash
+gitstash "Before updating authentication"
+```
+
+Additional positional arguments are rejected with the concise `gitstash` usage message. The single accepted argument is always treated as the stash title, not as a Git option.
+
+The command includes modified, staged, deleted, renamed, and untracked non-ignored files. Git-ignored files remain untouched. After success, both the working tree and staging area are clean, and all earlier stash entries remain available below the newly created `stash@{0}`.
+
+Success output is intentionally minimal:
+
+```text
+Changes stashed successfully.
+Changes stashed successfully: Before updating authentication
+```
+
+A clean repository returns `Nothing to stash. The working tree is clean.` without creating an empty entry. Unsafe merge, rebase, cherry-pick, revert, bisect, or conflict states are rejected before stash creation.
+
+When Git is initialized through Commit Master, `gitstash` continues automatically and supports the unborn repository by using a temporary internal base. That base is removed from the branch after the stash is verified; no user commit is left behind.
+
+Git must be able to resolve the user's configured identity because stash entries are stored as Git commit objects. Commit Master never invents or changes that identity.
+
+Ctrl+C before stash creation exits with status 130 and reports:
+
+```text
+Stash cancelled.
+Your changes were not removed.
+```
+
+If interruption arrives after Git created the stash, Commit Master verifies `refs/stash` and the working tree before reporting the final state.
+
+Use standard Git commands to inspect or restore saved changes:
+
+```bash
+git stash list
+git stash apply
+git stash pop
+```
+
+`gitstash` only creates a stash; it never applies, pops, deletes, or overwrites an existing entry.
+
 ## How It Works
 
 The toolkit:
@@ -208,6 +259,7 @@ The toolkit:
 - Automatically expands the date range when more days are required.
 - Copies absolute changed-file paths with `gitpaths`.
 - Creates complete Markdown change bundles with `gitbundle`.
+- Saves staged, unstaged, and untracked project changes with `gitstash`.
 - Preserves existing commits and working-tree changes.
 - Stops commit creation safely when the repository contains pre-existing staged changes, conflicts, or an active Git operation; clipboard commands intentionally include staged changes.
 
@@ -247,6 +299,18 @@ Copy changed-file contents as a Markdown bundle:
 
 ```bash
 gitbundle
+```
+
+Stash all project changes with the default title:
+
+```bash
+gitstash
+```
+
+Stash all project changes with a custom title:
+
+```bash
+gitstash "Work in progress"
 ```
 
 ## Author
