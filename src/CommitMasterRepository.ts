@@ -45,7 +45,7 @@ export const initializeRepository = async (cwd: string): Promise<void> => {
    }
 }
 
-const validateOperationState = async (root: string): Promise<void> => {
+export const validateRepositoryOperationState = async (root: string): Promise<void> => {
    const gitDirectory = await gitText(['rev-parse', '--absolute-git-dir'], {
       cwd: root,
       category: 'Git directory resolution',
@@ -67,6 +67,18 @@ const validateOperationState = async (root: string): Promise<void> => {
       }
    }
 
+   const conflicts = await runGit(['diff', '--name-only', '--diff-filter=U', '-z'], {
+      cwd: root,
+      category: 'Conflict validation',
+   })
+   if (conflicts.stdout.length > 0) {
+      throw new CommitMasterError(
+         'The repository contains unresolved conflicts. Resolve them before running Commit Master.'
+      )
+   }
+}
+
+const validateAttachedHead = async (root: string): Promise<void> => {
    const branch = await runGit(['symbolic-ref', '--quiet', 'HEAD'], {
       cwd: root,
       category: 'Branch validation',
@@ -75,16 +87,6 @@ const validateOperationState = async (root: string): Promise<void> => {
    if (branch.exitCode !== 0) {
       throw new CommitMasterError(
          'The repository is in detached HEAD state. Check out a branch before running Commit Master.'
-      )
-   }
-
-   const conflicts = await runGit(['diff', '--name-only', '--diff-filter=U', '-z'], {
-      cwd: root,
-      category: 'Conflict validation',
-   })
-   if (conflicts.stdout.length > 0) {
-      throw new CommitMasterError(
-         'The repository contains unresolved conflicts. Resolve them before running Commit Master.'
       )
    }
 }
@@ -181,7 +183,8 @@ const detectInPlaceProgressSafety = async (root: string): Promise<boolean> => {
 export const prepareRepository = async (cwd: string): Promise<RepositoryContext> => {
    const root = await resolveRepositoryRoot(cwd)
    if (!root) throw new CommitMasterError('The current directory is not inside a Git repository.')
-   await validateOperationState(root)
+   await validateRepositoryOperationState(root)
+   await validateAttachedHead(root)
    await validateCleanIndex(root)
    const headTimestampSeconds = await getHeadTimestamp(root)
    const inPlaceProgressSafe = await detectInPlaceProgressSafety(root)
