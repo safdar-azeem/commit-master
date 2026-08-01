@@ -7,5 +7,7 @@
     "declarationMap": false,
     "sourceMap": true
   },
-  "include": ["tests/**/*.ts"]
+  "include": [
+    "tests/**/*.ts"
+  ]
 }
