@@ -1,13 +1,14 @@
 {
   "name": "commit-master",
   "version": "0.1.2",
-  "description": "A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, and sharing changed files.",
+  "description": "Git utilities for per-file commits, historical scheduling, sharing changes, and safe project stashing.",
   "type": "module",
   "bin": {
     "commitspan": "dist/CommitMasterCommitspan.js",
     "autocommit": "dist/CommitMasterAutocommit.js",
     "gitpaths": "dist/CommitMasterGitpaths.js",
-    "gitbundle": "dist/CommitMasterGitbundle.js"
+    "gitbundle": "dist/CommitMasterGitbundle.js",
+    "gitstash": "dist/CommitMasterGitstash.js"
   },
   "main": "dist/CommitMasterCli.js",
   "types": "dist/CommitMasterCli.d.ts",
@@ -42,6 +43,8 @@
     "commitspan",
     "gitpaths",
     "gitbundle",
+    "gitstash",
+    "stash",
     "clipboard",
     "history",
     "automation",
