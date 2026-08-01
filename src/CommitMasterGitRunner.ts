@@ -40,14 +40,23 @@ export const runGit = (args: readonly string[], options: GitRunOptions): Promise
    new Promise((resolve, reject) => {
       let settled = false
       let inputError: Error | undefined
-      const child = spawn('git', [...args], {
+      const spawnOptions = {
          cwd: options.cwd,
          env: createGitEnvironment(options.env),
          shell: false,
          windowsHide: true,
          signal: options.signal,
-         stdio: [options.input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'],
-      })
+      }
+      const child =
+         options.input === undefined
+            ? spawn('git', [...args], {
+                 ...spawnOptions,
+                 stdio: ['inherit', 'pipe', 'pipe'],
+              })
+            : spawn('git', [...args], {
+                 ...spawnOptions,
+                 stdio: ['pipe', 'pipe', 'pipe'],
+              })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
 
