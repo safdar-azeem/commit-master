@@ -95,3 +95,10 @@ export class CommitInterruptedError extends CommitMasterError {
       this.total = total
    }
 }
+
+export class ClipboardInterruptedError extends CommitMasterError {
+   public constructor(options?: ErrorOptions) {
+      super('Copy cancelled.\nThe clipboard was not updated.', options)
+      this.name = 'ClipboardInterruptedError'
+   }
+}
