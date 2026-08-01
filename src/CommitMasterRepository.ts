@@ -108,12 +108,45 @@ const getHeadTimestamp = async (root: string): Promise<number | undefined> => {
   return parsed;
 };
 
+const detectInPlaceProgressSafety = async (root: string): Promise<boolean> => {
+  try {
+    const signing = await runGit(['config', '--bool', '--get', 'commit.gpgSign'], {
+      cwd: root,
+      category: 'Commit-signing progress check',
+      acceptedExitCodes: [0, 1],
+    });
+    if (signing.exitCode === 0 && signing.stdout.toString('utf8').trim() === 'true') return false;
+
+    const gitDirectory = await gitText(['rev-parse', '--absolute-git-dir'], {
+      cwd: root,
+      category: 'Hook-directory progress check',
+    });
+    const configuredHooks = await runGit(['config', '--path', '--get', 'core.hooksPath'], {
+      cwd: root,
+      category: 'Hook-path progress check',
+      acceptedExitCodes: [0, 1],
+    });
+    const configuredPath = configuredHooks.stdout.toString('utf8').trim();
+    const hooksDirectory = configuredPath
+      ? path.resolve(root, configuredPath)
+      : path.join(gitDirectory, 'hooks');
+    const commitHooks = ['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'post-rewrite'];
+    for (const hook of commitHooks) {
+      if (await exists(path.join(hooksDirectory, hook))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const prepareRepository = async (cwd: string): Promise<RepositoryContext> => {
   const root = await resolveRoot(cwd);
   await validateOperationState(root);
   await validateCleanIndex(root);
   const headTimestampSeconds = await getHeadTimestamp(root);
-  return { root, name: path.basename(root) || root, headTimestampSeconds };
+  const inPlaceProgressSafe = await detectInPlaceProgressSafety(root);
+  return { root, name: path.basename(root) || root, headTimestampSeconds, inPlaceProgressSafe };
 };
 
 export const validateCommitReadiness = async (
