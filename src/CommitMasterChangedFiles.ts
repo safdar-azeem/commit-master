@@ -10,6 +10,9 @@ const IGNORED_FILE_NAMES = new Set([
    'cargo.lock',
    'generated.ts',
    'mongoose.gen.ts',
+   'resolvers.generated.ts',
+   'typedefs.generated.ts',
+   'types.generated.ts',
    'tsconfig.tsbuildinfo',
    'tsconfig.node.tsbuildinfo',
    '.ds_store',
@@ -86,7 +89,7 @@ const IGNORED_DIRECTORY_PATHS = [
    '.xcode',
    'vendor/bundle',
    '.git',
-   'Pods',
+   'pods',
    '.nuxt',
    '.next',
    '.idea',
@@ -94,6 +97,20 @@ const IGNORED_DIRECTORY_PATHS = [
    'node_modules',
    'cache',
 ] as const
+
+const SENSITIVE_FILE_NAMES = new Set([
+   '.env',
+   'id_rsa',
+   'id_ed25519',
+   'credentials.json',
+   'service-account.json',
+   'secrets.json',
+   '.npmrc',
+   '.pypirc',
+   '.netrc',
+])
+
+const SENSITIVE_FILE_SUFFIXES = ['.pem', '.key', '.p12', '.pfx', '.keystore'] as const
 
 const normalizeGitPath = (filePath: string): string =>
    filePath.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/{2,}/g, '/')
@@ -111,11 +128,36 @@ export const isDefaultIgnoredPath = (filePath: string): boolean => {
    if (lowerName.startsWith('vite.config.ts.timestamp-')) return true
    if (IGNORED_FILE_SUFFIXES.some((suffix) => lowerName.endsWith(suffix))) return true
 
-   const surrounded = `/${normalized}/`
+   const surrounded = `/${lowerPath}/`
    return IGNORED_DIRECTORY_PATHS.some((directory) =>
       surrounded.includes(`/${directory}/`)
    )
 }
+
+export const isSensitivePath = (filePath: string): boolean => {
+   const lowerName = normalizeGitPath(filePath).toLowerCase().split('/').at(-1) ?? ''
+   if (SENSITIVE_FILE_NAMES.has(lowerName)) return true
+   if (lowerName.startsWith('.env.')) return true
+   if (lowerName.startsWith('service-account') && lowerName.endsWith('.json')) return true
+   return SENSITIVE_FILE_SUFFIXES.some((suffix) => lowerName.endsWith(suffix))
+}
+
+export const escapeDisplayedPath = (filePath: string): string =>
+   filePath.replace(/[\u0000-\u001f\u007f]/g, (character) => {
+      switch (character) {
+         case '\n':
+            return '\\n'
+         case '\r':
+            return '\\r'
+         case '\t':
+            return '\\t'
+         default:
+            return `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`
+      }
+   })
+
+export const escapeMarkdownHeadingPath = (filePath: string): string =>
+   escapeDisplayedPath(filePath).replace(/([`*_{}\[\]<>#!|])/g, '\\$1')
 
 export const filterEligibleChanges = (changes: readonly FileChange[]): FileChange[] => {
    const byCurrentPath = new Map<string, FileChange>()
