@@ -1,11 +1,13 @@
 {
   "name": "commit-master",
-  "version": "0.1.0",
-  "description": "A command-line toolkit offering a collection of utilities for automatic file commits and commits with custom backdated timestamps.",
+  "version": "0.1.1",
+  "description": "Git CLI tools for per-file commits, historical commit dates, and sharing changed files through the clipboard.",
   "type": "module",
   "bin": {
     "commitspan": "dist/CommitMasterCommitspan.js",
-    "autocommit": "dist/CommitMasterAutocommit.js"
+    "autocommit": "dist/CommitMasterAutocommit.js",
+    "gitpaths": "dist/CommitMasterGitpaths.js",
+    "gitbundle": "dist/CommitMasterGitbundle.js"
   },
   "main": "dist/CommitMasterCli.js",
   "types": "dist/CommitMasterCli.d.ts",
@@ -38,6 +40,9 @@
     "commit",
     "autocommit",
     "commitspan",
+    "gitpaths",
+    "gitbundle",
+    "clipboard",
     "history",
     "automation",
     "developer-tools",
