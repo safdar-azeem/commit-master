@@ -1,215 +1,120 @@
-# Commit Master
+# Git Commit CLI Toolkit
 
-Commit Master is a global TypeScript CLI that creates one Git commit per logical file change. One installation provides exactly two commands:
+A command-line toolkit offering a collection of utilities for automatic file commits and custom backdated timestamping commits.
 
-- `commitspan` distributes current changes across a historical calendar range.
-- `autocommit` commits current changes immediately.
+## Installation
 
-Both commands resolve the Git repository from the terminal's current directory, including when run from a nested directory. They never scan sibling repositories.
-
-## Requirements
-
-- Node.js 18.18 or newer
-- Git available on `PATH`
-- A Git author and committer name and email
-
-No package manager is required at runtime. Commit Master supports macOS, Linux, and Windows.
-
-## Global installation
-
-npm:
+Install globally with npm:
 
 ```bash
 npm install --global commit-master
 ```
 
-Yarn:
+Or with Yarn:
 
 ```bash
 yarn global add commit-master
 ```
 
-pnpm:
+## How to Use
+
+Open your Git project in the terminal, or navigate to the project directory:
 
 ```bash
-pnpm add --global commit-master
+cd path/to/your-project
 ```
 
-After installation:
+Then run one of the available commands inside that project:
 
 ```bash
-commitspan 10 5
 autocommit
 ```
 
-The package's `prepack` lifecycle invokes the local TypeScript compiler directly. Packaging and publication do not require Yarn.
-
-## `commitspan`
+or:
 
 ```bash
 commitspan <duration> <commits-per-day>
 ```
 
-`duration` is the requested number of inclusive calendar days ending on the current local date. `commits-per-day` is a strict positive limit for each date.
+The commands work with the Git repository of the currently opened project.
 
-Commit Master automatically calculates:
+## Automatic File Commits
 
-```text
-effectiveDuration = max(requestedDuration, ceil(changes / commitsPerDay))
-```
-
-If more days are required, the start date moves backward automatically. The end date remains the current date, the per-day limit is never exceeded, and the user does not need to calculate new arguments or rerun the command.
-
-For example, `commitspan 10 5` with 58 logical changes uses 12 effective days:
-
-```text
-Day 1 through Day 11: 5 commits per day
-Day 12: 3 commits
-```
-
-The summary reports both values:
-
-```text
-Requested duration: 10 days
-Effective duration: 12 days
-Commits per day: 5
-Commits to create: 58
-```
-
-Changes are ordered deterministically:
-
-1. Deleted files
-2. Modified files
-3. Renamed files
-4. New files
-
-Paths are sorted inside each group. A rename is one logical change and one commit.
-
-Messages follow these patterns:
-
-```text
-Add src/users.ts
-Update package.json
-Delete src/legacy-config.ts
-Rename src/old-name.ts to src/new-name.ts
-```
-
-Commit times increase deterministically within each local day. Current-day timestamps never exceed the command's start time, and each timestamp receives the correct local UTC offset for that date. Both `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` are assigned to newly created historical commits.
-
-Existing commits are never amended, rebased, or rewritten. New timestamps must remain later than `HEAD`. The scheduler expands while earlier dates add usable chronological slots. If `HEAD` is so recent that the strict daily limit leaves too few post-`HEAD` timestamps through the present, no backward expansion can solve that constraint; Commit Master stops instead of creating future-dated commits or commits timestamped before their parent.
-
-## `autocommit`
+Use `autocommit` inside your project to commit every current file change separately:
 
 ```bash
 autocommit
 ```
 
-`autocommit` snapshots eligible changes, commits each logical change separately with the real current time, and exits. It is not a watcher or daemon.
+Each added, updated, deleted, or renamed file receives its own commit.
 
-## Progress display
-
-Interactive terminals receive one continuously updated display:
+Example commit messages:
 
 ```text
-Commit Master
-Repository: network-logger
-Commits: 34/58
-Progress: [█████████████████░░░░░░░░░░░░░] 59%
-Date: 2026-07-27
-Current: Update src/modules/network.ts
-Status: Running
+Add users.ts
+Update package.json
+Delete legacy-config.ts
+Rename old-name.ts to new-name.ts
 ```
 
-The completed count advances only after Git confirms a successful commit. The final 100% display remains visible before the compact completion summary.
+## Backdated Timestamping Commits
 
-CI, redirected output, `TERM=dumb`, and other non-interactive environments do not receive cursor-control sequences. They receive throttled progress milestones instead of one log entry per file.
-
-Commit Master does not hide the terminal cursor, so interruption and failure cannot leave it hidden.
-
-## Failure and interruption recovery
-
-Commit Master requires a clean index before it starts. That clean boundary lets it safely recover staging introduced by the current transaction.
-
-If staging or committing fails because of a hook, signing, Git failure, or Ctrl+C:
-
-- successful earlier commits remain in history;
-- the failed transaction's index changes are removed;
-- hook-generated staged entries from that transaction are removed;
-- all working-tree content is preserved;
-- failed and unprocessed changes remain available;
-- no successful commit is reset;
-- the repository is immediately safe to retry.
-
-Ctrl+C sets an interruption request. Commit Master finishes or aborts the current Git boundary, restores a clean index for an uncommitted file, renders an `Interrupted` progress state, reports completed and remaining commits, and exits with status 130. It never starts the next file after interruption is requested.
-
-If a hook stages additional files but the intended commit succeeds, those unexpected index entries are unstaged while their working-tree content is retained.
-
-## Eligible changes and path safety
-
-Both commands support:
-
-- untracked, non-ignored files;
-- modified tracked files;
-- deleted tracked files;
-- Git-detected renames;
-- spaces, Unicode characters, hidden paths, nested paths, and names beginning with `-`;
-- symbolic links according to normal Git behavior.
-
-Ignored untracked files remain ignored. Git output is NUL-delimited, process output is fully buffered, commands use argument arrays rather than shell strings, and paths follow `--` where applicable.
-
-Before each commit, the index is verified to contain only the intended path or rename pair. The commit is also restricted by Git pathspecs. Normal Git hooks and signing configuration remain enabled.
-
-## Repository safety
-
-Commit Master stops before mutation when it detects:
-
-- a merge, rebase, cherry-pick, revert, or bisect in progress;
-- unresolved conflicts or unmerged files;
-- detached `HEAD`;
-- existing user-staged changes;
-- missing Git author or committer identity;
-- a future-dated `HEAD`.
-
-An empty repository is supported. A clean repository exits successfully without an empty commit:
-
-```text
-Nothing to commit. The working tree is clean.
-```
-
-## Input validation
-
-Both values for `commitspan` must be whole integers greater than zero. Extra arguments are rejected. `autocommit` accepts no arguments.
-
-```text
-Usage:
-  commitspan <duration> <commits-per-day>
-  autocommit
-
-Examples:
-  commitspan 10 5
-  autocommit
-```
-
-## Common errors
-
-- **Not inside a Git repository:** change into a Git working tree or initialize one.
-- **Git unavailable:** install Git and ensure it is on `PATH`.
-- **Missing identity:** configure Git `user.name` and `user.email`.
-- **Existing staged changes:** commit or unstage them manually before running Commit Master.
-- **Unsafe Git operation:** complete or abort the active operation.
-- **Hook or signing failure:** fix the reported issue and retry; working changes are preserved.
-- **Recent `HEAD` leaves insufficient chronological slots:** use a higher per-day limit only if that history shape is intentional, or wait until additional valid dates are available.
-
-## Development
-
-Use any compatible package manager:
+Use `commitspan` inside your project to distribute current file changes across previous calendar days:
 
 ```bash
-npm install
-npm run build
+commitspan 10 5
 ```
 
-Equivalent Yarn and pnpm commands are also supported.
+Arguments:
+
+```text
+10 = number of days
+5 = maximum commits per day
+```
+
+The command automatically calculates how many days are required based on the number of changed files.
+
+For example, 58 file changes with a limit of 5 commits per day will be distributed across 12 days.
+
+## How It Works
+
+The toolkit:
+
+- Uses the Git repository of the currently opened project.
+- Finds added, modified, deleted, and renamed files.
+- Creates one commit for each logical file change.
+- Generates a clear commit message from the change type.
+- Uses the current timestamp with `autocommit`.
+- Generates chronological backdated timestamps with `commitspan`.
+- Automatically expands the date range when more days are required.
+- Preserves existing commits and working-tree changes.
+- Stops safely when the repository contains staged changes, conflicts, or an active Git operation.
+
+## Examples
+
+Open your project:
+
+```bash
+cd path/to/your-project
+```
+
+Commit all current changes immediately:
+
+```bash
+autocommit
+```
+
+Distribute commits across 10 days with up to 5 commits per day:
+
+```bash
+commitspan 10 5
+```
+
+Distribute commits across 30 days with up to 3 commits per day:
+
+```bash
+commitspan 30 3
+```
 
 ## Author
 
