@@ -204,7 +204,7 @@ export const validateCommitReadiness = async (
    }
 }
 
-export const readChanges = async (repository: RepositoryContext): Promise<FileChange[]> => {
+export const readChanges = async (repository: Pick<RepositoryContext, 'root'>): Promise<FileChange[]> => {
    const status = await runGit(
       ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--renames'],
       {
