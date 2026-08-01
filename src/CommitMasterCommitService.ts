@@ -1,4 +1,9 @@
-import { CommitInterruptedError, CommitMasterError, FileCommitError } from './CommitMasterErrors.js';
+import {
+  CommitInterruptedError,
+  CommitMasterError,
+  CommitOutcomeUnknownError,
+  FileCommitError,
+} from './CommitMasterErrors.js';
 import { runGit } from './CommitMasterGitRunner.js';
 import type { InterruptionController } from './CommitMasterInterruption.js';
 import { displayPath } from './CommitMasterMessages.js';
@@ -98,6 +103,35 @@ const cleanHookChanges = async (repository: RepositoryContext): Promise<number> 
   return unexpected.length;
 };
 
+const readHeadOid = async (repository: RepositoryContext, category: string): Promise<string | undefined> => {
+  const head = await runGit(['rev-parse', '--verify', 'HEAD'], {
+    cwd: repository.root,
+    category,
+    acceptedExitCodes: [0, 128],
+  });
+  return head.exitCode === 0 ? head.stdout.toString('utf8').trim() : undefined;
+};
+
+const verifyCommitCreated = async (
+  repository: RepositoryContext,
+  change: FileChange,
+  previousHead: string | undefined,
+): Promise<boolean> => {
+  let currentHead: string | undefined;
+  try {
+    currentHead = await readHeadOid(repository, `Commit completion verification for "${displayPath(change)}"`);
+  } catch (error) {
+    throw new CommitOutcomeUnknownError(displayPath(change), error);
+  }
+  if (previousHead !== undefined && currentHead === undefined) {
+    throw new CommitOutcomeUnknownError(
+      displayPath(change),
+      new CommitMasterError('HEAD existed before git commit but could not be resolved afterward.'),
+    );
+  }
+  return currentHead !== previousHead;
+};
+
 const combineFailure = (original: unknown, cleanup: unknown): CommitMasterError => {
   const originalMessage = original instanceof Error ? original.message : String(original);
   const cleanupMessage = cleanup instanceof Error ? cleanup.message : String(cleanup);
@@ -128,24 +162,44 @@ export const commitChanges = async (
       await stageChange(repository, request.change, interruption.signal);
       interruption.throwIfInterrupted(created, requests.length);
 
-      const gitDate = request.timestamp ? toGitDate(request.timestamp) : undefined;
-      await runGit(['commit', '-m', request.message, '--', ...affectedPaths(request.change)], {
-        cwd: repository.root,
-        category: `Committing "${displayPath(request.change)}"`,
-        env: gitDate ? { GIT_AUTHOR_DATE: gitDate, GIT_COMMITTER_DATE: gitDate } : undefined,
-        signal: interruption.signal,
-      });
+      const previousHead = await readHeadOid(
+        repository,
+        `Pre-commit HEAD snapshot for "${displayPath(request.change)}"`,
+      );
 
-      commitCreated = true;
-      created += 1;
-      if (request.timestamp) {
-        firstTimestamp ??= request.timestamp;
-        lastTimestamp = request.timestamp;
+      const gitDate = request.timestamp ? toGitDate(request.timestamp) : undefined;
+      let commitFailure: unknown;
+      try {
+        await runGit(['commit', '-m', request.message, '--', ...affectedPaths(request.change)], {
+          cwd: repository.root,
+          category: `Committing "${displayPath(request.change)}"`,
+          env: gitDate ? { GIT_AUTHOR_DATE: gitDate, GIT_COMMITTER_DATE: gitDate } : undefined,
+          signal: interruption.signal,
+        });
+      } catch (error) {
+        commitFailure = error;
       }
-      progress.onCommit(request, created, requests.length);
-      recoveredStagedEntries += await cleanHookChanges(repository);
+
+      commitCreated = await verifyCommitCreated(repository, request.change, previousHead);
+      if (commitCreated) {
+        created += 1;
+        if (request.timestamp) {
+          firstTimestamp ??= request.timestamp;
+          lastTimestamp = request.timestamp;
+        }
+        progress.onCommit(request, created, requests.length);
+        recoveredStagedEntries += await cleanHookChanges(repository);
+      }
+
+      if (commitFailure !== undefined) throw commitFailure;
+      if (!commitCreated) {
+        throw new CommitMasterError(
+          `Git exited successfully for "${displayPath(request.change)}", but HEAD did not change. The commit was not recorded.`,
+        );
+      }
       interruption.throwIfInterrupted(created, requests.length);
     } catch (error) {
+      if (error instanceof CommitOutcomeUnknownError) throw error;
       let failure: unknown = error;
       let indexRestored = !stagingAttempted;
       if (stagingAttempted) {
@@ -172,7 +226,7 @@ export const commitChanges = async (
           { cause: failure },
         );
       }
-      throw new FileCommitError(displayPath(request.change), created, failure, indexRestored);
+      throw new FileCommitError(displayPath(request.change), created, requests.length, failure, indexRestored);
     }
   }
   return { created, firstTimestamp, lastTimestamp, recoveredStagedEntries };
