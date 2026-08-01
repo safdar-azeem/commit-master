@@ -1,10 +1,16 @@
 import { spawn } from 'node:child_process'
-import { CommitMasterError } from './CommitMasterErrors.js'
+import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
 
-interface ClipboardProgram {
+export interface ClipboardProgram {
    command: string
    args: readonly string[]
 }
+
+export type ClipboardProgramWriter = (
+   program: ClipboardProgram,
+   content: string,
+   signal?: AbortSignal
+) => Promise<boolean>
 
 const POWERSHELL_CLIPBOARD_SCRIPT =
    '[Console]::InputEncoding=[Text.Encoding]::UTF8; $content=[Console]::In.ReadToEnd(); Set-Clipboard -Value $content'
@@ -72,11 +78,22 @@ const writeWithProgram = (
 export const copyToClipboard = async (
    content: string,
    signal?: AbortSignal,
-   platform: NodeJS.Platform = process.platform
+   platform: NodeJS.Platform = process.platform,
+   write: ClipboardProgramWriter = writeWithProgram
 ): Promise<void> => {
    for (const program of clipboardPrograms(platform)) {
-      if (signal?.aborted) throw signal.reason
-      if (await writeWithProgram(program, content, signal)) return
+      if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
+      try {
+         if (await write(program, content, signal)) return
+      } catch (error) {
+         if (signal?.aborted) throw new ClipboardInterruptedError({ cause: error })
+      }
    }
-   throw new CommitMasterError('Unable to copy to the clipboard.')
+   const guidance =
+      platform === 'linux'
+         ? '\nInstall wl-copy, xclip, or xsel.'
+         : platform === 'aix' || platform === 'freebsd' || platform === 'openbsd' || platform === 'sunos'
+           ? '\nInstall a supported clipboard provider such as wl-copy, xclip, or xsel.'
+           : ''
+   throw new CommitMasterError(`Unable to copy to the clipboard.${guidance}`)
 }
