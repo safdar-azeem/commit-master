@@ -1,0 +1,61 @@
+{
+  "name": "commit-master",
+  "version": "0.0.2",
+  "description": "Create safe per-file Git commits now or distribute them across a historical date span.",
+  "type": "module",
+  "bin": {
+    "commitspan": "dist/CommitMasterCommitspan.js",
+    "autocommit": "dist/CommitMasterAutocommit.js"
+  },
+  "main": "dist/CommitMasterCli.js",
+  "types": "dist/CommitMasterCli.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "yarn build"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "packageManager": "yarn@1.22.22",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/safdar-azeem/commit-master.git"
+  },
+  "bugs": {
+    "url": "https://github.com/safdar-azeem/commit-master/issues"
+  },
+  "homepage": "https://github.com/safdar-azeem/commit-master#readme",
+  "author": "Safdar Azeem (https://github.com/safdar-azeem)",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "cli",
+    "commit",
+    "autocommit",
+    "commitspan",
+    "history",
+    "automation",
+    "developer-tools",
+    "Auto Commit Message",
+    "git",
+    "scm",
+    "version control",
+    "source control",
+    "git commit",
+    "commit message",
+    "automate",
+    "bulk commit",
+    "batch commit",
+    "productivity",
+    "developer tools"
+  ],
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0"
+  }
+}
