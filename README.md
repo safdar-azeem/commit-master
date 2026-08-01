@@ -38,6 +38,19 @@ commitspan <duration> <commits-per-day>
 
 The commands work with the Git repository of the currently opened project.
 
+## Automatic Git Initialization
+
+If the current project is not a Git repository, an interactive terminal asks:
+
+```text
+Git is not initialized in this project.
+Initialize it now? (Y/n)
+```
+
+Press Enter or answer Yes to initialize Git in the current directory and continue the original command automatically. Answer No to cancel without changing the project.
+
+CI, redirected input, and other non-interactive environments never initialize Git or wait for input. They ask you to initialize Git before running Commit Master. Git identity is never created or changed automatically.
+
 ## Automatic File Commits
 
 Use `autocommit` inside your project to commit every current file change separately:
@@ -81,6 +94,7 @@ For example, 58 file changes with a limit of 5 commits per day will be distribut
 The toolkit:
 
 - Uses the Git repository of the currently opened project.
+- Offers to initialize Git in the current project when needed.
 - Finds added, modified, deleted, and renamed files.
 - Creates one commit for each logical file change.
 - Generates a clear commit message from the change type.
