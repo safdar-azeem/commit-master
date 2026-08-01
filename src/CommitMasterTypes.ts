@@ -1,0 +1,25 @@
+export type ChangeKind = 'deleted' | 'modified' | 'renamed' | 'new';
+
+export interface FileChange {
+  kind: ChangeKind;
+  path: string;
+  previousPath?: string;
+}
+
+export interface RepositoryContext {
+  root: string;
+  name: string;
+  headTimestampSeconds?: number;
+}
+
+export interface CommitRequest {
+  change: FileChange;
+  message: string;
+  timestamp?: Date;
+}
+
+export interface CommitResult {
+  created: number;
+  firstTimestamp?: Date;
+  lastTimestamp?: Date;
+}
