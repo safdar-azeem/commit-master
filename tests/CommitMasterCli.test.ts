@@ -7,6 +7,7 @@ import {
    realpath,
    rename,
    rm,
+   symlink,
    unlink,
    writeFile,
 } from 'node:fs/promises'
@@ -24,16 +25,25 @@ import {
 import { createProgressHeader } from '../dist/CommitMasterOutput.js'
 import { createCommitMessage } from '../dist/CommitMasterMessages.js'
 import {
+   MAX_BUNDLE_BYTES,
    createMarkdownBundle,
    createSafeFence,
    detectFenceLanguage,
+   fileReadPlaceholder,
 } from '../dist/CommitMasterBundle.js'
 import {
    collectEligibleChanges,
+   escapeDisplayedPath,
+   escapeMarkdownHeadingPath,
    isDefaultIgnoredPath,
+   isSensitivePath,
    resolveAbsoluteChangedPath,
 } from '../dist/CommitMasterChangedFiles.js'
-import { runClipboardCommand } from '../dist/CommitMasterClipboardCommands.js'
+import {
+   clipboardSuccessMessage,
+   runClipboardCommand,
+} from '../dist/CommitMasterClipboardCommands.js'
+import { copyToClipboard } from '../dist/CommitMasterClipboard.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
 import { confirmGitInitialization, parseConfirmationAnswer } from '../dist/CommitMasterPrompt.js'
@@ -355,6 +365,73 @@ describe('change classification and paths', () => {
 })
 
 describe('clipboard commands', () => {
+   it('preserves the complete centralized generated-file and directory ignore policy', () => {
+      for (const file of [
+         'yarn.lock',
+         'pnpm-lock.yaml',
+         'bun.lockb',
+         'Cargo.lock',
+         'generated.ts',
+         'mongoose.gen.ts',
+         'resolvers.generated.ts',
+         'typeDefs.generated.ts',
+         'types.generated.ts',
+         'schema.generated.ts',
+         'client.generated.ts',
+         'tsconfig.tsbuildinfo',
+         'tsconfig.node.tsbuildinfo',
+         '.DS_Store',
+         'vite.config.ts.timestamp-12345',
+      ]) {
+         assert.equal(isDefaultIgnoredPath(`packages/api/src/${file}`), true, file)
+      }
+
+      for (const directory of [
+         '_locales',
+         'src-tauri/target',
+         'gen',
+         'temp',
+         'ffmpeg',
+         'migrations',
+         'sql',
+         'dist',
+         '.xcode',
+         'vendor/bundle',
+         '.git',
+         'Pods',
+         '.nuxt',
+         '.next',
+         '.idea',
+         '.bundle',
+         'node_modules',
+         'cache',
+      ]) {
+         assert.equal(isDefaultIgnoredPath(`packages/web/${directory}/nested/file.ts`), true, directory)
+         assert.equal(
+            isDefaultIgnoredPath(`PACKAGES/WEB/${directory.toUpperCase()}/NESTED/file.ts`),
+            true,
+            directory
+         )
+      }
+
+      assert.equal(isDefaultIgnoredPath('packages/web/package.json'), false)
+   })
+
+   it('preserves every required ignored file extension case-insensitively', () => {
+      const extensions = [
+         '.log', '.sql', '.onnx', '.TAG', '.pdf', '.docx', '.csv', '.jpg', '.jpeg',
+         '.png', '.gif', '.webp', '.svg', '.avif', '.bmp', '.ico', '.tif', '.tiff',
+         '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpeg',
+         '.mpg', '.wmv', '.flv', '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg',
+         '.opus', '.wma', '.aiff', '.aif', '.zip', '.tar', '.gz', '.tgz', '.bz2',
+         '.xz', '.7z', '.rar', '.db', '.sqlite', '.sqlite3', '.wasm', '.exe', '.dll',
+         '.dylib', '.so',
+      ]
+      for (const extension of extensions) {
+         assert.equal(isDefaultIgnoredPath(`src/FILE${extension}`), true, extension)
+      }
+   })
+
    it('collects a stable staged, unstaged, renamed, deleted, and untracked union', async () => {
       const repository = await createRepository()
       await createBaselineCommit(repository, {
@@ -384,6 +461,72 @@ describe('clipboard commands', () => {
       assert.equal(isDefaultIgnoredPath('src-tauri/target/release/app'), true)
    })
 
+   it('protects tracked environment, credential, and private-key contents', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'baseline.ts': 'baseline\n' })
+      await writeRepositoryFile(repository, '.env', 'TOKEN=old\n')
+      await writeRepositoryFile(repository, 'credentials.json', '{"token":"old"}\n')
+      await writeRepositoryFile(repository, 'keys/private.pem', 'old-key\n')
+      git(repository, ['add', '--force', '--', '.env', 'credentials.json', 'keys/private.pem'])
+      git(repository, ['commit', '--quiet', '-m', 'Sensitive baseline'])
+      await writeRepositoryFile(repository, '.env', 'TOKEN=super-secret\n')
+      await writeRepositoryFile(repository, 'credentials.json', '{"token":"cloud-secret"}\n')
+      await writeRepositoryFile(repository, 'keys/private.pem', 'private-key-material\n')
+
+      const changes = await collectEligibleChanges(repository)
+      assert.deepEqual(changes.map((change) => change.path), [
+         '.env',
+         'credentials.json',
+         'keys/private.pem',
+      ])
+      const bundle = await createMarkdownBundle(repository, changes)
+      assert.equal((bundle.match(/\[SENSITIVE FILE OMITTED\]/g) ?? []).length, 3)
+      assert.doesNotMatch(bundle, /super-secret|cloud-secret|private-key-material/)
+      assert.equal(isSensitivePath('.env.production'), true)
+      assert.equal(isSensitivePath('config/service-account-production.json'), true)
+      assert.equal(isSensitivePath('keys/id_ed25519'), true)
+      for (const file of [
+         '.env.local',
+         '.env.production',
+         'private.pem',
+         'private.key',
+         'certificate.p12',
+         'certificate.pfx',
+         'release.keystore',
+         'id_rsa',
+         'id_ed25519',
+         'credentials.json',
+         'service-account-staging.json',
+         'secrets.json',
+         '.npmrc',
+         '.pypirc',
+         '.netrc',
+      ]) {
+         assert.equal(isSensitivePath(`config/${file}`), true, file)
+      }
+
+      let paths = ''
+      await runClipboardCommand('gitpaths', repository, undefined, async (content) => {
+         paths = content
+      })
+      assert.match(paths, /\.env/)
+      assert.doesNotMatch(paths, /super-secret/)
+   })
+
+   it('works immediately after shared Git initialization', async () => {
+      const project = await createProject()
+      await writeRepositoryFile(project, 'first.ts', 'first\n')
+      assert.equal(
+         await ensureGitRepository(project, new InterruptionController(), async () => true),
+         true
+      )
+      let copied = ''
+      await runClipboardCommand('gitpaths', project, undefined, async (content) => {
+         copied = content
+      })
+      assert.equal(copied, resolveAbsoluteChangedPath(project, 'first.ts'))
+   })
+
    it('builds language-aware, fence-safe Markdown with deletion and binary placeholders', async () => {
       const repository = await createRepository()
       await writeRepositoryFile(repository, 'docs/guide.md', 'Example: ```ts\ncode\n```\n')
@@ -405,6 +548,134 @@ describe('clipboard commands', () => {
       assert.equal(detectFenceLanguage('env.d.ts'), 'ts')
       assert.equal(detectFenceLanguage('file.unknown'), 'text')
       assert.equal(createSafeFence('contains ``` here'), '````')
+      assert.equal(createSafeFence('contains `````````` here').length, 11)
+   })
+
+   it('handles missing, unreadable, and oversized files without truncating content', async () => {
+      const repository = await createRepository()
+      await mkdir(join(repository, 'replaced-with-directory'))
+      await writeRepositoryFile(repository, 'large.txt', '12345')
+      const bundle = await createMarkdownBundle(
+         repository,
+         [
+            { kind: 'modified', path: 'missing.txt' },
+            { kind: 'modified', path: 'replaced-with-directory' },
+            { kind: 'modified', path: 'large.txt' },
+         ],
+         { maxFileBytes: 4 }
+      )
+
+      assert.match(bundle, /\[FILE NOT FOUND\]/)
+      assert.match(bundle, /\[FILE UNREADABLE\]/)
+      assert.match(bundle, /\[FILE TOO LARGE\]/)
+      assert.equal(fileReadPlaceholder(Object.assign(new Error('denied'), { code: 'EACCES' })), '[FILE UNREADABLE]')
+   })
+
+   it('stops before clipboard mutation when total bundle construction fails', async () => {
+      const repository = await createRepository()
+      await writeRepositoryFile(repository, 'large.txt', 'content\n')
+      let clipboardCalled = false
+
+      await assert.rejects(
+         runClipboardCommand(
+            'gitbundle',
+            repository,
+            undefined,
+            async () => {
+               clipboardCalled = true
+            },
+            (root, changes, options) =>
+               createMarkdownBundle(root, changes, {
+                  ...options,
+                  maxBundleBytes: Math.min(40, MAX_BUNDLE_BYTES),
+               })
+         ),
+         /bundle exceeds the 10 MiB safety limit/i
+      )
+      assert.equal(clipboardCalled, false)
+   })
+
+   it('escapes control and Markdown-sensitive path characters only for display', () => {
+      assert.equal(escapeDisplayedPath('/repo/line\nbreak\t.ts'), '/repo/line\\nbreak\\t.ts')
+      assert.equal(
+         escapeMarkdownHeadingPath('/repo/a`b[1]#file.ts'),
+         '/repo/a\\`b\\[1\\]\\#file.ts'
+      )
+   })
+
+   it(
+      'includes a symbolic-link target without following it outside the repository',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const repository = await createRepository()
+         const outside = join(await createProject(), 'outside-secret.txt')
+         await writeFile(outside, 'must-not-be-read\n', 'utf8')
+         await symlink(outside, join(repository, 'linked.txt'))
+
+         const bundle = await createMarkdownBundle(repository, [
+            { kind: 'new', path: 'linked.txt' },
+         ])
+         assert.match(bundle, new RegExp(outside.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+         assert.doesNotMatch(bundle, /must-not-be-read/)
+      }
+   )
+
+   it('falls back between clipboard providers and provides Linux installation guidance', async () => {
+      const attempted: string[] = []
+      await copyToClipboard('content', undefined, 'linux', async (program) => {
+         attempted.push(program.command)
+         return program.command === 'xclip'
+      })
+      assert.deepEqual(attempted, ['wl-copy', 'xclip'])
+
+      await assert.rejects(
+         copyToClipboard('content', undefined, 'linux', async () => false),
+         /Unable to copy to the clipboard\.\nInstall wl-copy, xclip, or xsel\./
+      )
+      assert.equal(clipboardSuccessMessage('gitpaths', 8), '8 file paths copied.')
+      assert.equal(
+         clipboardSuccessMessage('gitbundle', 8),
+         '8 changed files bundled and copied.'
+      )
+   })
+
+   it(
+      'uses clipboard-specific Ctrl+C output without reporting commits',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const repository = await createRepository()
+         await writeRepositoryFile(repository, 'created.ts', 'created\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-clipboard-wrapper-'))
+         temporaryPaths.add(wrapperDirectory)
+         const provider = process.platform === 'darwin' ? 'pbcopy' : 'wl-copy'
+         const wrapper = join(wrapperDirectory, provider)
+         await writeFile(wrapper, '#!/bin/sh\nkill -INT "$PPID"\nexit 130\n', 'utf8')
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(repository, 'gitpaths', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+         })
+         assert.equal(result.status, 130)
+         assert.match(result.stderr, /Copy cancelled\./)
+         assert.match(result.stderr, /The clipboard was not updated\./)
+         assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /commits|paths copied/i)
+      }
+   )
+
+   it('resolves nested directories without collecting a sibling repository', async () => {
+      const repository = await createRepository()
+      const nested = join(repository, 'src', 'nested')
+      await mkdir(nested, { recursive: true })
+      await writeRepositoryFile(repository, 'root-change.ts', 'root\n')
+      const sibling = await createRepository()
+      await writeRepositoryFile(sibling, 'sibling-change.ts', 'sibling\n')
+      let copied = ''
+
+      await runClipboardCommand('gitpaths', nested, undefined, async (content) => {
+         copied = content
+      })
+      assert.equal(copied, resolveAbsoluteChangedPath(repository, 'root-change.ts'))
+      assert.doesNotMatch(copied, /sibling-change/)
    })
 
    it('copies absolute paths and does not invoke the clipboard for a clean tree', async () => {
