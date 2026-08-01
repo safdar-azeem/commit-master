@@ -1,6 +1,6 @@
 {
   "name": "commit-master",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "A command-line toolkit offering a collection of utilities for automatic file commits and commits with custom backdated timestamps.",
   "type": "module",
   "bin": {
