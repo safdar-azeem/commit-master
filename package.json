@@ -1,7 +1,7 @@
 {
   "name": "commit-master",
   "version": "0.1.1",
-  "description": "Git CLI tools for per-file commits, historical commit dates, and sharing changed files through the clipboard.",
+  "description": "A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, and sharing changed files.",
   "type": "module",
   "bin": {
     "commitspan": "dist/CommitMasterCommitspan.js",
