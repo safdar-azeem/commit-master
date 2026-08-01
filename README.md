@@ -22,13 +22,13 @@ Or with pnpm:
 pnpm add --global commit-master
 ```
 
-One global installation exposes all five commands: `autocommit`, `commitspan`, `gitpaths`, `gitbundle`, and `gitstash`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
+One global installation exposes all five commands: `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, and `gitstash`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
 
 ## Visual Studio Code Extension
 
 If you prefer to use this workflow inside Visual Studio Code, install the [Auto Commit Master extension](https://marketplace.visualstudio.com/items?itemName=SafdarAzeem.auto-commit-master) from the Visual Studio Marketplace.
 
-The extension provides the Visual Studio Code experience, while this package provides the `autocommit`, `commitspan`, `gitpaths`, `gitbundle`, and `gitstash` terminal commands.
+The extension provides the Visual Studio Code experience, while this package provides the `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, and `gitstash` terminal commands.
 
 ## How to Use
 
@@ -41,8 +41,8 @@ cd path/to/your-project
 Then run one of the available commands inside that project:
 
 ```bash
-autocommit
-commitspan <duration> <commits-per-day>
+gitauto
+gitspan <duration> <commits-per-day>
 gitpaths
 gitbundle
 gitstash ["stash title"]
@@ -67,10 +67,10 @@ This initialization flow applies to all five commands. After confirmation, the o
 
 ## Automatic File Commits
 
-Use `autocommit` inside your project to commit every current file change separately:
+Use `gitauto` inside your project to commit every current file change separately:
 
 ```bash
-autocommit
+gitauto
 ```
 
 Each added, updated, deleted, or renamed file receives its own commit.
@@ -86,10 +86,10 @@ Rename old-name.ts to new-name.ts
 
 ## Backdated Timestamping Commits
 
-Use `commitspan` inside your project to distribute current file changes across previous calendar days:
+Use `gitspan` inside your project to distribute current file changes across previous calendar days:
 
 ```bash
-commitspan 10 5
+gitspan 10 5
 ```
 
 Arguments:
@@ -254,8 +254,8 @@ The toolkit:
 - Finds added, modified, deleted, and renamed files.
 - Creates one commit for each logical file change.
 - Generates a clear commit message from the change type.
-- Uses the current timestamp with `autocommit`.
-- Generates chronological backdated timestamps with `commitspan`.
+- Uses the current timestamp with `gitauto`.
+- Generates chronological backdated timestamps with `gitspan`.
 - Automatically expands the date range when more days are required.
 - Copies absolute changed-file paths with `gitpaths`.
 - Creates complete Markdown change bundles with `gitbundle`.
@@ -274,19 +274,19 @@ cd path/to/your-project
 Commit all current changes immediately:
 
 ```bash
-autocommit
+gitauto
 ```
 
 Distribute commits across 10 days with up to 5 commits per day:
 
 ```bash
-commitspan 10 5
+gitspan 10 5
 ```
 
 Distribute commits across 30 days with up to 3 commits per day:
 
 ```bash
-commitspan 30 3
+gitspan 30 3
 ```
 
 Copy changed-file paths:
