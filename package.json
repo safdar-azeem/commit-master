@@ -1,6 +1,6 @@
 {
   "name": "commit-master",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Create safe per-file Git commits now or distribute them across a historical date span.",
   "type": "module",
   "bin": {
@@ -16,12 +16,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepack": "yarn build"
+    "prepack": "tsc -p tsconfig.json"
   },
   "engines": {
     "node": ">=18.18"
   },
-  "packageManager": "yarn@1.22.22",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/safdar-azeem/commit-master.git"
