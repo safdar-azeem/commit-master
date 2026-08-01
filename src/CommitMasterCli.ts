@@ -1,12 +1,13 @@
 import { commitChanges } from './CommitMasterCommitService.js';
 import { createExpandableDateSchedule } from './CommitMasterDates.js';
-import { CommitInterruptedError, CommitMasterError } from './CommitMasterErrors.js';
+import {
+  CommitInterruptedError,
+  CommitMasterError,
+  CommitOutcomeUnknownError,
+} from './CommitMasterErrors.js';
 import { InterruptionController } from './CommitMasterInterruption.js';
 import { createCommitMessage } from './CommitMasterMessages.js';
 import {
-  printAutocommitSummary,
-  printCommitspanSummary,
-  printCompletion,
   type CommitspanOutputDetails,
 } from './CommitMasterOutput.js';
 import { CommitProgressReporter } from './CommitMasterProgress.js';
@@ -56,6 +57,7 @@ export const runCommand = async (
   const repository = await prepareRepository(process.cwd());
   const changes = await readChanges(repository);
   if (changes.length === 0) {
+    console.log(repository.name);
     console.log('Nothing to commit. The working tree is clean.');
     return;
   }
@@ -79,25 +81,30 @@ export const runCommand = async (
       startDate: schedule.startDate,
       endDate: schedule.endDate,
     };
-    printCommitspanSummary(repository, changes.length, spanDetails);
     requests = changes.map((change, index) => ({
       change,
       message: createCommitMessage(change),
       timestamp: schedule.timestamps[index],
     }));
   } else {
-    printAutocommitSummary(repository, changes.length);
     requests = changes.map((change) => ({ change, message: createCommitMessage(change) }));
   }
 
-  const progress = new CommitProgressReporter(repository, requests.length);
+  const progress = new CommitProgressReporter(repository, requests.length, spanDetails);
   progress.start();
   try {
     const result = await commitChanges(repository, requests, progress, interruption);
     progress.complete();
-    printCompletion(result, spanDetails);
+    if (result.recoveredStagedEntries > 0) {
+      console.log(
+        `Recovered unexpected staged paths: ${result.recoveredStagedEntries}. Working-tree content was preserved.`,
+      );
+    }
   } catch (error) {
-    progress.fail(error instanceof CommitInterruptedError || interruption.isInterrupted());
+    progress.fail(
+      error instanceof CommitInterruptedError ||
+        (interruption.isInterrupted() && !(error instanceof CommitOutcomeUnknownError)),
+    );
     throw error;
   }
 };
@@ -108,7 +115,9 @@ export const runCli = async (command: CommandName, args: readonly string[]): Pro
   try {
     await runCommand(command, args, interruption);
   } catch (caught) {
-    const error = interruption.isInterrupted() && !(caught instanceof CommitInterruptedError)
+    const error = interruption.isInterrupted() &&
+      !(caught instanceof CommitInterruptedError) &&
+      !(caught instanceof CommitOutcomeUnknownError)
       ? new CommitInterruptedError(0, 0, { cause: caught, indexRestored: true })
       : caught;
     const message = error instanceof Error ? error.message : String(error);
