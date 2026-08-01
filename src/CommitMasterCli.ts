@@ -25,22 +25,22 @@ import {
 import type { CommitRequest } from './CommitMasterTypes.js'
 import { DEFAULT_STASH_TITLE, runStashCommand } from './CommitMasterStash.js'
 
-export type CommandName = 'commitspan' | 'autocommit' | ClipboardCommandName | 'gitstash'
+export type CommandName = 'gitspan' | 'gitauto' | ClipboardCommandName | 'gitstash'
 
 const GITSTASH_USAGE = `Usage:
   gitstash
   gitstash "stash title"`
 
 export const USAGE = `Usage:
-  commitspan <duration> <commits-per-day>
-  autocommit
+  gitspan <duration> <commits-per-day>
+  gitauto
   gitpaths
   gitbundle
   gitstash ["stash title"]
 
 Examples:
-  commitspan 10 5
-  autocommit
+  gitspan 10 5
+  gitauto
   gitpaths
   gitbundle
   gitstash "Work in progress"`
@@ -51,7 +51,7 @@ const positiveInteger = (value: string | undefined): number | undefined => {
    return Number.isSafeInteger(parsed) ? parsed : undefined
 }
 
-const parseCommitspanArguments = (
+const parseGitspanArguments = (
    args: readonly string[]
 ): { duration: number; commitsPerDay: number } => {
    if (args.length !== 2) throw new CommitMasterError(`Invalid arguments.\n\n${USAGE}`)
@@ -73,7 +73,7 @@ export const runCommand = async (
    args: readonly string[],
    interruption: InterruptionController
 ): Promise<void> => {
-   const span = command === 'commitspan' ? parseCommitspanArguments(args) : undefined
+   const span = command === 'gitspan' ? parseGitspanArguments(args) : undefined
    const stash =
       command === 'gitstash'
          ? (() => {
@@ -84,7 +84,7 @@ export const runCommand = async (
               }
            })()
          : undefined
-   if (command !== 'commitspan' && command !== 'gitstash' && args.length !== 0) {
+   if (command !== 'gitspan' && command !== 'gitstash' && args.length !== 0) {
       throw new CommitMasterError(`${command} does not accept arguments.\n\n${USAGE}`)
    }
 
