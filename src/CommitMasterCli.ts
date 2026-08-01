@@ -1,5 +1,9 @@
 import { commitChanges } from './CommitMasterCommitService.js'
 import { ensureGitRepository } from './CommitMasterBootstrap.js'
+import {
+   runClipboardCommand,
+   type ClipboardCommandName,
+} from './CommitMasterClipboardCommands.js'
 import { createExpandableDateSchedule } from './CommitMasterDates.js'
 import {
    CommitInterruptedError,
@@ -17,15 +21,19 @@ import {
 } from './CommitMasterRepository.js'
 import type { CommitRequest } from './CommitMasterTypes.js'
 
-export type CommandName = 'commitspan' | 'autocommit'
+export type CommandName = 'commitspan' | 'autocommit' | ClipboardCommandName
 
 export const USAGE = `Usage:
   commitspan <duration> <commits-per-day>
   autocommit
+  gitpaths
+  gitbundle
 
 Examples:
   commitspan 10 5
-  autocommit`
+  autocommit
+  gitpaths
+  gitbundle`
 
 const positiveInteger = (value: string | undefined): number | undefined => {
    if (!value || !/^[1-9]\d*$/.test(value)) return undefined
@@ -56,12 +64,18 @@ export const runCommand = async (
    interruption: InterruptionController
 ): Promise<void> => {
    const span = command === 'commitspan' ? parseCommitspanArguments(args) : undefined
-   if (command === 'autocommit' && args.length !== 0) {
-      throw new CommitMasterError(`autocommit does not accept arguments.\n\n${USAGE}`)
+   if (command !== 'commitspan' && args.length !== 0) {
+      throw new CommitMasterError(`${command} does not accept arguments.\n\n${USAGE}`)
    }
 
    const cwd = process.cwd()
    if (!(await ensureGitRepository(cwd, interruption))) return
+
+   if (command === 'gitpaths' || command === 'gitbundle') {
+      interruption.throwIfInterrupted(0, 0)
+      await runClipboardCommand(command, cwd, interruption.signal)
+      return
+   }
 
    const executionTime = new Date()
    const repository = await prepareRepository(cwd)
