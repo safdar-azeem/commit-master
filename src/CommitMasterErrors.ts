@@ -31,13 +31,37 @@ export class FileCommitError extends CommitMasterError {
   public readonly file: string;
   public readonly completed: number;
 
-  public constructor(file: string, completed: number, cause: unknown) {
+  public constructor(file: string, completed: number, cause: unknown, indexRestored: boolean) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    super(`Unable to commit "${file}".\n${detail}\nCreated ${completed} commit${completed === 1 ? '' : 's'} before the failure.`, {
-      cause,
-    });
+    const recovery = indexRestored
+      ? '\nThe staging area was restored and working-tree changes were preserved.'
+      : '\nThe staging area could not be fully restored. Review the Git index before retrying.';
+    super(
+      `Unable to commit "${file}".\n${detail}\nCreated ${completed} commit${completed === 1 ? '' : 's'} before the failure.${recovery}`,
+      { cause },
+    );
     this.name = 'FileCommitError';
     this.file = file;
     this.completed = completed;
+  }
+}
+
+export class CommitInterruptedError extends CommitMasterError {
+  public readonly completed: number;
+  public readonly total: number;
+
+  public constructor(
+    completed: number,
+    total: number,
+    options?: ErrorOptions & { indexRestored?: boolean },
+  ) {
+    const remaining = Math.max(0, total - completed);
+    const recovery = options?.indexRestored === false
+      ? '\nThe staging area could not be fully restored. Review the Git index before retrying.'
+      : '\nThe staging area is clean and working-tree changes were preserved.';
+    super(`Interrupted.\nCreated commits: ${completed}\nRemaining changes: ${remaining}${recovery}`, options);
+    this.name = 'CommitInterruptedError';
+    this.completed = completed;
+    this.total = total;
   }
 }
