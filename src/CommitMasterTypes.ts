@@ -10,6 +10,7 @@ export interface RepositoryContext {
   root: string;
   name: string;
   headTimestampSeconds?: number;
+  inPlaceProgressSafe: boolean;
 }
 
 export interface CommitRequest {
