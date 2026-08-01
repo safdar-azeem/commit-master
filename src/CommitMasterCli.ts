@@ -10,6 +10,8 @@ import {
    CommitInterruptedError,
    CommitMasterError,
    CommitOutcomeUnknownError,
+   StashInterruptedError,
+   StashOutcomeUnknownError,
 } from './CommitMasterErrors.js'
 import { InterruptionController } from './CommitMasterInterruption.js'
 import { createCommitMessage } from './CommitMasterMessages.js'
@@ -21,20 +23,27 @@ import {
    validateCommitReadiness,
 } from './CommitMasterRepository.js'
 import type { CommitRequest } from './CommitMasterTypes.js'
+import { DEFAULT_STASH_TITLE, runStashCommand } from './CommitMasterStash.js'
 
-export type CommandName = 'commitspan' | 'autocommit' | ClipboardCommandName
+export type CommandName = 'commitspan' | 'autocommit' | ClipboardCommandName | 'gitstash'
+
+const GITSTASH_USAGE = `Usage:
+  gitstash
+  gitstash "stash title"`
 
 export const USAGE = `Usage:
   commitspan <duration> <commits-per-day>
   autocommit
   gitpaths
   gitbundle
+  gitstash ["stash title"]
 
 Examples:
   commitspan 10 5
   autocommit
   gitpaths
-  gitbundle`
+  gitbundle
+  gitstash "Work in progress"`
 
 const positiveInteger = (value: string | undefined): number | undefined => {
    if (!value || !/^[1-9]\d*$/.test(value)) return undefined
@@ -65,7 +74,17 @@ export const runCommand = async (
    interruption: InterruptionController
 ): Promise<void> => {
    const span = command === 'commitspan' ? parseCommitspanArguments(args) : undefined
-   if (command !== 'commitspan' && args.length !== 0) {
+   const stash =
+      command === 'gitstash'
+         ? (() => {
+              if (args.length > 1) throw new CommitMasterError(GITSTASH_USAGE)
+              return {
+                 title: args.length === 1 ? (args[0] ?? '') : DEFAULT_STASH_TITLE,
+                 customTitle: args.length === 1,
+              }
+           })()
+         : undefined
+   if (command !== 'commitspan' && command !== 'gitstash' && args.length !== 0) {
       throw new CommitMasterError(`${command} does not accept arguments.\n\n${USAGE}`)
    }
 
@@ -75,6 +94,11 @@ export const runCommand = async (
    if (command === 'gitpaths' || command === 'gitbundle') {
       interruption.throwIfInterrupted(0, 0)
       await runClipboardCommand(command, cwd, interruption.signal)
+      return
+   }
+
+   if (command === 'gitstash' && stash) {
+      await runStashCommand(cwd, stash.title, stash.customTitle, interruption.signal)
       return
    }
 
@@ -141,12 +165,18 @@ export const runCli = async (command: CommandName, args: readonly string[]): Pro
       await runCommand(command, args, interruption)
    } catch (caught) {
       const clipboardCommand = command === 'gitpaths' || command === 'gitbundle'
+      const stashCommand = command === 'gitstash'
       const error = interruption.isInterrupted()
          ? clipboardCommand
             ? caught instanceof ClipboardInterruptedError
                ? caught
                : new ClipboardInterruptedError({ cause: caught })
-            : !(caught instanceof CommitInterruptedError) &&
+            : stashCommand
+              ? caught instanceof StashInterruptedError ||
+                caught instanceof StashOutcomeUnknownError
+                 ? caught
+                 : new StashInterruptedError(false, { cause: caught })
+              : !(caught instanceof CommitInterruptedError) &&
                 !(caught instanceof CommitOutcomeUnknownError)
               ? new CommitInterruptedError(0, 0, { cause: caught, indexRestored: true })
               : caught
@@ -154,7 +184,9 @@ export const runCli = async (command: CommandName, args: readonly string[]): Pro
       const message = error instanceof Error ? error.message : String(error)
       console.error(message)
       process.exitCode =
-         error instanceof CommitInterruptedError || error instanceof ClipboardInterruptedError
+         error instanceof CommitInterruptedError ||
+         error instanceof ClipboardInterruptedError ||
+         error instanceof StashInterruptedError
             ? 130
             : 1
    } finally {
