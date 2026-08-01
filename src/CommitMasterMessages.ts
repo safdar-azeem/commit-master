@@ -1,13 +1,15 @@
 import type { FileChange } from './CommitMasterTypes.js';
 
 const readablePath = (filePath: string): string =>
-  filePath
-    .replaceAll('\\', '/')
-    .replace(/^(?:\.\/)+/, '')
-    .replace(/^\/+/, '');
+  filePath.replaceAll('\\', '/').replace(/^(?:\.\/)+/, '').replace(/^\/+/, '');
+
+const fileName = (filePath: string): string => {
+  const parts = readablePath(filePath).split('/').filter(Boolean);
+  return parts.at(-1) ?? '';
+};
 
 export const createCommitMessage = (change: FileChange): string => {
-  const current = readablePath(change.path);
+  const current = fileName(change.path);
   switch (change.kind) {
     case 'new':
       return `Add ${current}`;
@@ -16,7 +18,7 @@ export const createCommitMessage = (change: FileChange): string => {
     case 'deleted':
       return `Delete ${current}`;
     case 'renamed':
-      return `Rename ${readablePath(change.previousPath ?? '')} to ${current}`;
+      return `Rename ${fileName(change.previousPath ?? '')} to ${current}`;
   }
 };
 
