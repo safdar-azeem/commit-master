@@ -4,6 +4,7 @@ import {
    chmod,
    mkdir,
    mkdtemp,
+   readFile,
    realpath,
    rename,
    rm,
@@ -48,10 +49,10 @@ import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
 import { confirmGitInitialization, parseConfirmationAnswer } from '../dist/CommitMasterPrompt.js'
 
-const commitspanBinary = fileURLToPath(
+const gitspanBinary = fileURLToPath(
    new URL('../dist/CommitMasterCommitspan.js', import.meta.url)
 )
-const autocommitBinary = fileURLToPath(
+const gitautoBinary = fileURLToPath(
    new URL('../dist/CommitMasterAutocommit.js', import.meta.url)
 )
 const gitpathsBinary = fileURLToPath(new URL('../dist/CommitMasterGitpaths.js', import.meta.url))
@@ -127,17 +128,17 @@ const createBaselineCommit = async (
 
 const runCli = (
    repository: string,
-   command: 'commitspan' | 'autocommit' | 'gitpaths' | 'gitbundle' | 'gitstash',
+   command: 'gitspan' | 'gitauto' | 'gitpaths' | 'gitbundle' | 'gitstash',
    args: readonly string[] = [],
    environment?: NodeJS.ProcessEnv
 ): CommandResult =>
    execute(
       process.execPath,
       [
-         command === 'commitspan'
-            ? commitspanBinary
-            : command === 'autocommit'
-              ? autocommitBinary
+         command === 'gitspan'
+            ? gitspanBinary
+            : command === 'gitauto'
+              ? gitautoBinary
               : command === 'gitpaths'
                 ? gitpathsBinary
                 : command === 'gitbundle'
@@ -179,6 +180,23 @@ afterEach(async () => {
    temporaryPaths.clear()
 })
 
+describe('package command names', () => {
+   it('publishes canonical Git-prefixed commands while retaining silent compatibility aliases', async () => {
+      const packagePath = fileURLToPath(new URL('../package.json', import.meta.url))
+      const manifest = JSON.parse(await readFile(packagePath, 'utf8')) as {
+         bin: Record<string, string>
+      }
+
+      assert.equal(manifest.bin.gitauto, 'dist/CommitMasterAutocommit.js')
+      assert.equal(manifest.bin.gitspan, 'dist/CommitMasterCommitspan.js')
+      assert.equal(manifest.bin.gitpaths, 'dist/CommitMasterGitpaths.js')
+      assert.equal(manifest.bin.gitbundle, 'dist/CommitMasterGitbundle.js')
+      assert.equal(manifest.bin.gitstash, 'dist/CommitMasterGitstash.js')
+      assert.equal(manifest.bin.autocommit, manifest.bin.gitauto)
+      assert.equal(manifest.bin.commitspan, manifest.bin.gitspan)
+   })
+})
+
 describe('Git initialization', () => {
    it('accepts Enter and Yes while rejecting No and invalid answers correctly', () => {
       assert.equal(parseConfirmationAnswer(''), 'yes')
@@ -208,7 +226,7 @@ describe('Git initialization', () => {
       assert.match(rendered, /Initialize it now\? \(Y\/n\)/)
    })
 
-   it('initializes an unborn repository after confirmation and supports immediate autocommit', async () => {
+   it('initializes an unborn repository after confirmation and supports immediate gitauto', async () => {
       const project = await createProject()
       await writeRepositoryFile(project, 'src/first.ts', 'first\n')
       const interruption = new InterruptionController()
@@ -221,13 +239,13 @@ describe('Git initialization', () => {
       git(project, ['config', 'user.name', 'Commit Master Test'])
       git(project, ['config', 'user.email', 'commit-master@example.invalid'])
 
-      const result = runCli(project, 'autocommit')
+      const result = runCli(project, 'gitauto')
       assert.equal(result.status, 0, result.stderr)
       assert.equal(commitCount(project), 1)
       assert.equal(git(project, ['status', '--porcelain']), '')
    })
 
-   it('supports commitspan immediately after initializing an unborn repository', async () => {
+   it('supports gitspan immediately after initializing an unborn repository', async () => {
       const project = await createProject()
       await writeRepositoryFile(project, 'src/first.ts', 'first\n')
       await writeRepositoryFile(project, 'src/second.ts', 'second\n')
@@ -238,7 +256,7 @@ describe('Git initialization', () => {
       git(project, ['config', 'user.name', 'Commit Master Test'])
       git(project, ['config', 'user.email', 'commit-master@example.invalid'])
 
-      const result = runCli(project, 'commitspan', ['10', '5'])
+      const result = runCli(project, 'gitspan', ['10', '5'])
       assert.equal(result.status, 0, result.stderr)
       assert.equal(commitCount(project), 2)
       assert.equal(git(project, ['status', '--porcelain']), '')
@@ -258,8 +276,8 @@ describe('Git initialization', () => {
 
    it('refuses to initialize or wait in non-interactive runs for all five commands', async () => {
       for (const [command, args] of [
-         ['autocommit', []],
-         ['commitspan', ['10', '5']],
+         ['gitauto', []],
+         ['gitspan', ['10', '5']],
          ['gitpaths', []],
          ['gitbundle', []],
          ['gitstash', []],
@@ -288,7 +306,7 @@ describe('Git initialization', () => {
    })
 })
 
-describe('commitspan', () => {
+describe('gitspan', () => {
    it('expands 10 days to 12 and creates 58 chronological commits', async () => {
       const repository = await createRepository()
       for (let index = 0; index < 58; index += 1) {
@@ -300,7 +318,7 @@ describe('commitspan', () => {
       }
 
       const before = Math.floor(Date.now() / 1000)
-      const result = runCli(repository, 'commitspan', ['10', '5'])
+      const result = runCli(repository, 'gitspan', ['10', '5'])
       const after = Math.ceil(Date.now() / 1000)
 
       assert.equal(result.status, 0, result.stderr)
@@ -334,9 +352,9 @@ describe('commitspan', () => {
    it('reports the repository and clean working tree on a second run', async () => {
       const repository = await createRepository()
       await writeRepositoryFile(repository, 'one.ts', 'one\n')
-      assert.equal(runCli(repository, 'commitspan', ['10', '5']).status, 0)
+      assert.equal(runCli(repository, 'gitspan', ['10', '5']).status, 0)
 
-      const clean = runCli(repository, 'commitspan', ['10', '5'])
+      const clean = runCli(repository, 'gitspan', ['10', '5'])
       assert.equal(clean.status, 0, clean.stderr)
       assert.match(clean.stdout, /commit-master-test-/)
       assert.match(clean.stdout, /Nothing to commit\. The working tree is clean\./)
@@ -358,7 +376,7 @@ describe('change classification and paths', () => {
       await writeRepositoryFile(repository, 'src/ümlaut.ts', 'unicode\n')
       await writeRepositoryFile(repository, '-feature.ts', 'dash\n')
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
       assert.equal(result.status, 0, result.stderr)
       assert.equal(commitCount(repository), 7)
       assert.equal(git(repository, ['status', '--porcelain']), '')
@@ -929,7 +947,7 @@ describe('HEAD verification and recovery', () => {
       )
       const before = commitCount(repository)
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
 
       assert.notEqual(result.status, 0)
       assert.equal(commitCount(repository), before)
@@ -945,7 +963,7 @@ describe('HEAD verification and recovery', () => {
       await writeRepositoryFile(repository, 'created.ts', 'created\n')
       await installHook(repository, 'post-commit', "echo 'post-commit hook failed' >&2\nexit 1")
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
 
       assert.equal(result.status, 0, result.stderr)
       assert.equal(commitCount(repository), 1)
@@ -970,7 +988,7 @@ describe('HEAD verification and recovery', () => {
          )
          await chmod(wrapper, 0o755)
 
-         const result = runCli(repository, 'autocommit', [], {
+         const result = runCli(repository, 'gitauto', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
             REAL_GIT: realGit,
          })
@@ -992,7 +1010,7 @@ describe('HEAD verification and recovery', () => {
          "printf 'generated by hook\\n' > hook-generated.txt\ngit add -- hook-generated.txt"
       )
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
 
       assert.equal(result.status, 0, result.stderr)
       assert.equal(stagedPaths(repository), '')
@@ -1017,7 +1035,7 @@ describe('HEAD verification and recovery', () => {
          )
          await chmod(wrapper, 0o755)
 
-         const result = runCli(repository, 'autocommit', [], {
+         const result = runCli(repository, 'gitauto', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
             REAL_GIT: realGit,
          })
@@ -1041,7 +1059,7 @@ describe('HEAD verification and recovery', () => {
             'CLI_PID=$(ps -o ppid= -p "$PPID" | tr -d \' \')\nkill -INT "$CLI_PID"\nexit 1'
          )
 
-         const result = runCli(repository, 'autocommit')
+         const result = runCli(repository, 'gitauto')
 
          assert.equal(result.status, 130)
          assert.equal(commitCount(repository), 0)
@@ -1063,7 +1081,7 @@ describe('HEAD verification and recovery', () => {
             'CLI_PID=$(ps -o ppid= -p "$PPID" | tr -d \' \')\nkill -INT "$CLI_PID"\nexit 1'
          )
 
-         const result = runCli(repository, 'autocommit')
+         const result = runCli(repository, 'gitauto')
 
          assert.equal(commitCount(repository), 1)
          assert.equal(stagedPaths(repository), '')
@@ -1140,7 +1158,7 @@ describe('output and timestamps', () => {
       const repository = await createRepository()
       await writeRepositoryFile(repository, 'created.ts', 'created\n')
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
 
       assert.equal(result.status, 0, result.stderr)
       assert.doesNotMatch(result.stdout, /\u001b\[/)
@@ -1148,12 +1166,12 @@ describe('output and timestamps', () => {
       assert.doesNotMatch(result.stdout, /Commit Master|Completed successfully|Created commits:/)
    })
 
-   it('uses current author and committer timestamps for autocommit', async () => {
+   it('uses current author and committer timestamps for gitauto', async () => {
       const repository = await createRepository()
       await writeRepositoryFile(repository, 'created.ts', 'created\n')
       const before = Math.floor(Date.now() / 1000)
 
-      const result = runCli(repository, 'autocommit')
+      const result = runCli(repository, 'gitauto')
       const after = Math.ceil(Date.now() / 1000)
 
       assert.equal(result.status, 0, result.stderr)
