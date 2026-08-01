@@ -102,3 +102,27 @@ export class ClipboardInterruptedError extends CommitMasterError {
       this.name = 'ClipboardInterruptedError'
    }
 }
+
+export class StashInterruptedError extends CommitMasterError {
+   public constructor(stashCreated: boolean, options?: ErrorOptions) {
+      super(
+         stashCreated
+            ? 'A new stash was created, but cleanup was interrupted.\nSome working-tree changes may remain. Inspect "git stash list" and "git status".'
+            : 'Stash cancelled.\nYour changes were not removed.',
+         options
+      )
+      this.name = 'StashInterruptedError'
+   }
+}
+
+export class StashOutcomeUnknownError extends CommitMasterError {
+   public constructor(cause: unknown) {
+      const detail = cause instanceof Error ? `\n${cause.message}` : ''
+      super(
+         'The stash result could not be verified safely. Inspect "git stash list" and "git status" before retrying.' +
+            detail,
+         { cause }
+      )
+      this.name = 'StashOutcomeUnknownError'
+   }
+}
