@@ -4,11 +4,13 @@
   "description": "Git utilities for per-file commits, historical scheduling, sharing changes, and safe project stashing.",
   "type": "module",
   "bin": {
-    "commitspan": "dist/CommitMasterCommitspan.js",
-    "autocommit": "dist/CommitMasterAutocommit.js",
+    "gitauto": "dist/CommitMasterAutocommit.js",
+    "gitspan": "dist/CommitMasterCommitspan.js",
     "gitpaths": "dist/CommitMasterGitpaths.js",
     "gitbundle": "dist/CommitMasterGitbundle.js",
-    "gitstash": "dist/CommitMasterGitstash.js"
+    "gitstash": "dist/CommitMasterGitstash.js",
+    "autocommit": "dist/CommitMasterAutocommit.js",
+    "commitspan": "dist/CommitMasterCommitspan.js"
   },
   "main": "dist/CommitMasterCli.js",
   "types": "dist/CommitMasterCli.d.ts",
@@ -39,8 +41,8 @@
     "git",
     "cli",
     "commit",
-    "autocommit",
-    "commitspan",
+    "gitauto",
+    "gitspan",
     "gitpaths",
     "gitbundle",
     "gitstash",
