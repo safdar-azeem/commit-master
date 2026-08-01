@@ -1,6 +1,6 @@
 {
   "name": "commit-master",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, and sharing changed files.",
   "type": "module",
   "bin": {
