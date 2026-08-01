@@ -31,18 +31,43 @@ export class FileCommitError extends CommitMasterError {
   public readonly file: string;
   public readonly completed: number;
 
-  public constructor(file: string, completed: number, cause: unknown, indexRestored: boolean) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
+  public constructor(
+    file: string,
+    completed: number,
+    total: number,
+    cause: unknown,
+    indexRestored: boolean,
+  ) {
+    const detail = cause instanceof GitCommandError
+      ? `Git reported: ${cause.stderr || cause.message}`
+      : cause instanceof Error
+        ? cause.message
+        : String(cause);
     const recovery = indexRestored
       ? '\nThe staging area was restored and working-tree changes were preserved.'
       : '\nThe staging area could not be fully restored. Review the Git index before retrying.';
     super(
-      `Unable to commit "${file}".\n${detail}\nCreated ${completed} commit${completed === 1 ? '' : 's'} before the failure.${recovery}`,
+      `${detail}\nCreated commits: ${completed}\nRemaining changes: ${Math.max(0, total - completed)}${recovery}`,
       { cause },
     );
     this.name = 'FileCommitError';
     this.file = file;
     this.completed = completed;
+  }
+}
+
+export class CommitOutcomeUnknownError extends CommitMasterError {
+  public readonly file: string;
+
+  public constructor(file: string, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Commit completion for "${file}" could not be verified safely.\n${detail}\n` +
+        'Inspect HEAD and the staging area before retrying. Commit Master did not automatically reset this ambiguous state.',
+      { cause },
+    );
+    this.name = 'CommitOutcomeUnknownError';
+    this.file = file;
   }
 }
 
@@ -59,7 +84,7 @@ export class CommitInterruptedError extends CommitMasterError {
     const recovery = options?.indexRestored === false
       ? '\nThe staging area could not be fully restored. Review the Git index before retrying.'
       : '\nThe staging area is clean and working-tree changes were preserved.';
-    super(`Interrupted.\nCreated commits: ${completed}\nRemaining changes: ${remaining}${recovery}`, options);
+    super(`Created commits: ${completed}\nRemaining changes: ${remaining}${recovery}`, options);
     this.name = 'CommitInterruptedError';
     this.completed = completed;
     this.total = total;
