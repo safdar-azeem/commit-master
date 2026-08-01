@@ -56,6 +56,7 @@ const autocommitBinary = fileURLToPath(
 )
 const gitpathsBinary = fileURLToPath(new URL('../dist/CommitMasterGitpaths.js', import.meta.url))
 const gitbundleBinary = fileURLToPath(new URL('../dist/CommitMasterGitbundle.js', import.meta.url))
+const gitstashBinary = fileURLToPath(new URL('../dist/CommitMasterGitstash.js', import.meta.url))
 const temporaryPaths = new Set<string>()
 
 interface CommandResult {
@@ -126,7 +127,7 @@ const createBaselineCommit = async (
 
 const runCli = (
    repository: string,
-   command: 'commitspan' | 'autocommit' | 'gitpaths' | 'gitbundle',
+   command: 'commitspan' | 'autocommit' | 'gitpaths' | 'gitbundle' | 'gitstash',
    args: readonly string[] = [],
    environment?: NodeJS.ProcessEnv
 ): CommandResult =>
@@ -139,7 +140,9 @@ const runCli = (
               ? autocommitBinary
               : command === 'gitpaths'
                 ? gitpathsBinary
-                : gitbundleBinary,
+                : command === 'gitbundle'
+                  ? gitbundleBinary
+                  : gitstashBinary,
          ...args,
       ],
       repository,
@@ -157,6 +160,11 @@ const commitCount = (repository: string): number => {
 
 const stagedPaths = (repository: string): string =>
    git(repository, ['diff', '--cached', '--name-only', '--no-renames'])
+
+const stashCount = (repository: string): number => {
+   const entries = git(repository, ['stash', 'list', '--format=%H'])
+   return entries ? entries.split('\n').length : 0
+}
 
 const installHook = async (repository: string, name: string, body: string): Promise<void> => {
    const hooksDirectory = git(repository, ['rev-parse', '--git-path', 'hooks'])
@@ -248,12 +256,13 @@ describe('Git initialization', () => {
       await assert.rejects(access(join(project, '.git')))
    })
 
-   it('refuses to initialize or wait in non-interactive runs for all four commands', async () => {
+   it('refuses to initialize or wait in non-interactive runs for all five commands', async () => {
       for (const [command, args] of [
          ['autocommit', []],
          ['commitspan', ['10', '5']],
          ['gitpaths', []],
          ['gitbundle', []],
+         ['gitstash', []],
       ] as const) {
          const project = await createProject()
          await writeRepositoryFile(project, 'first.ts', 'first\n')
@@ -694,6 +703,218 @@ describe('clipboard commands', () => {
       })
       assert.equal(cleanClipboardCalled, false)
    })
+})
+
+describe('gitstash', () => {
+   it('stashes staged, unstaged, deleted, renamed, and untracked changes while preserving ignored files and older stashes', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, {
+         '.gitignore': 'ignored.txt\n',
+         'modified.ts': 'before\n',
+         'staged.ts': 'before\n',
+         'deleted.ts': 'delete\n',
+         'old-name.ts': 'rename\n',
+      })
+      await writeRepositoryFile(repository, 'previous.ts', 'previous\n')
+      git(repository, ['stash', 'push', '--include-untracked', '--message', 'Previous stash'])
+
+      await writeRepositoryFile(repository, 'modified.ts', 'after\n')
+      await writeRepositoryFile(repository, 'staged.ts', 'staged after\n')
+      git(repository, ['add', '--', 'staged.ts'])
+      await unlink(join(repository, 'deleted.ts'))
+      await rename(join(repository, 'old-name.ts'), join(repository, 'new-name.ts'))
+      await writeRepositoryFile(repository, 'untracked.ts', 'untracked\n')
+      await writeRepositoryFile(repository, 'ignored.txt', 'ignored\n')
+
+      const result = runCli(repository, 'gitstash')
+
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stdout.trim(), 'Changes stashed successfully.')
+      assert.equal(stashCount(repository), 2)
+      assert.equal(git(repository, ['status', '--porcelain']), '')
+      await access(join(repository, 'ignored.txt'))
+      const stashMessages = git(repository, ['stash', 'list', '--format=%gs'])
+      assert.match(stashMessages, /Commit Master stash/)
+      assert.match(stashMessages, /Previous stash/)
+
+      git(repository, ['stash', 'apply', '--index', 'stash@{0}'])
+      assert.match(stagedPaths(repository), /staged\.ts/)
+      const restored = git(repository, ['status', '--porcelain'])
+      assert.match(restored, /modified\.ts/)
+      assert.match(restored, /deleted\.ts/)
+      assert.match(restored, /new-name\.ts/)
+      assert.match(restored, /untracked\.ts/)
+   })
+
+   it('uses an exact custom Unicode title and rejects extra arguments', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'tracked.ts': 'before\n' })
+      await writeRepositoryFile(repository, 'tracked.ts', 'after\n')
+      const title = 'Before auth – $pecial! 日本語'
+
+      const result = runCli(repository, 'gitstash', [title])
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stdout.trim(), `Changes stashed successfully: ${title}`)
+      assert.ok(git(repository, ['stash', 'list', '-1', '--format=%gs']).endsWith(title))
+
+      await writeRepositoryFile(repository, 'another.ts', 'another\n')
+      const invalid = runCli(repository, 'gitstash', ['one', 'two'])
+      assert.notEqual(invalid.status, 0)
+      assert.match(invalid.stderr, /Usage:\n  gitstash\n  gitstash "stash title"/)
+      assert.equal(stashCount(repository), 1)
+   })
+
+   it('does not create an empty stash for a clean working tree', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'tracked.ts': 'clean\n' })
+
+      const result = runCli(repository, 'gitstash')
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(result.stdout.trim(), 'Nothing to stash. The working tree is clean.')
+      assert.equal(stashCount(repository), 0)
+   })
+
+   it('stashes files immediately after shared initialization without leaving a branch commit', async () => {
+      const project = await createProject()
+      await writeRepositoryFile(project, 'first.ts', 'first\n')
+      assert.equal(
+         await ensureGitRepository(project, new InterruptionController(), async () => true),
+         true
+      )
+      git(project, ['config', 'user.name', 'Commit Master Test'])
+      git(project, ['config', 'user.email', 'commit-master@example.invalid'])
+
+      const result = runCli(project, 'gitstash')
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(stashCount(project), 1)
+      assert.equal(git(project, ['status', '--porcelain']), '')
+      assert.notEqual(execute('git', ['rev-parse', '--verify', 'HEAD'], project).status, 0)
+
+      git(project, ['commit', '--allow-empty', '--quiet', '-m', 'Initial'])
+      git(project, ['stash', 'apply', 'stash@{0}'])
+      await access(join(project, 'first.ts'))
+   })
+
+   it('rejects unsafe operation state before creating a stash', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'tracked.ts': 'before\n' })
+      await writeRepositoryFile(repository, 'tracked.ts', 'after\n')
+      const gitDirectory = git(repository, ['rev-parse', '--absolute-git-dir'])
+      await writeFile(join(gitDirectory, 'MERGE_HEAD'), '0000000000000000000000000000000000000000\n')
+
+      const result = runCli(repository, 'gitstash')
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /Git merge operation is in progress/)
+      await unlink(join(gitDirectory, 'MERGE_HEAD'))
+      assert.equal(stashCount(repository), 0)
+      assert.match(git(repository, ['status', '--porcelain']), /tracked\.ts/)
+   })
+
+   it('resolves a nested directory without affecting a sibling repository', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'root.ts': 'before\n' })
+      await writeRepositoryFile(repository, 'root.ts', 'after\n')
+      const nested = join(repository, 'src', 'nested')
+      await mkdir(nested, { recursive: true })
+      const sibling = await createRepository()
+      await writeRepositoryFile(sibling, 'sibling.ts', 'sibling\n')
+
+      const result = runCli(nested, 'gitstash')
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(stashCount(repository), 1)
+      assert.equal(stashCount(sibling), 0)
+      assert.match(git(sibling, ['status', '--porcelain']), /sibling\.ts/)
+   })
+
+   it(
+      'uses stash-specific Ctrl+C output when no stash was created',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const repository = await createRepository()
+         await writeRepositoryFile(repository, 'created.ts', 'created\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-stash-wrapper-'))
+         temporaryPaths.add(wrapperDirectory)
+         const realGit = execute('sh', ['-c', 'command -v git'], repository).stdout.trim()
+         const wrapper = join(wrapperDirectory, 'git')
+         await writeFile(
+            wrapper,
+            '#!/bin/sh\nif [ "$1" = "stash" ]; then kill -INT "$PPID"; exit 130; fi\nexec "$REAL_GIT" "$@"\n',
+            'utf8'
+         )
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(repository, 'gitstash', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            REAL_GIT: realGit,
+         })
+         assert.equal(result.status, 130)
+         assert.match(result.stderr, /Stash cancelled\./)
+         assert.match(result.stderr, /Your changes were not removed\./)
+         assert.doesNotMatch(result.stderr, /Created commits/)
+         assert.equal(stashCount(repository), 0)
+         assert.match(git(repository, ['status', '--porcelain']), /created\.ts/)
+      }
+   )
+
+   it(
+      'reports success when interruption arrives after the stash was created',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const repository = await createRepository()
+         await createBaselineCommit(repository, { 'tracked.ts': 'before\n' })
+         await writeRepositoryFile(repository, 'tracked.ts', 'after\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-stash-after-wrapper-'))
+         temporaryPaths.add(wrapperDirectory)
+         const realGit = execute('sh', ['-c', 'command -v git'], repository).stdout.trim()
+         const wrapper = join(wrapperDirectory, 'git')
+         await writeFile(
+            wrapper,
+            '#!/bin/sh\nif [ "$1" = "stash" ]; then "$REAL_GIT" "$@"; kill -INT "$PPID"; exit 130; fi\nexec "$REAL_GIT" "$@"\n',
+            'utf8'
+         )
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(repository, 'gitstash', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            REAL_GIT: realGit,
+         })
+         assert.equal(result.status, 0, result.stderr)
+         assert.equal(result.stdout.trim(), 'Changes stashed successfully.')
+         assert.equal(stashCount(repository), 1)
+         assert.equal(git(repository, ['status', '--porcelain']), '')
+      }
+   )
+
+   it(
+      'preserves changes and existing stashes when Git rejects stash creation',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const repository = await createRepository()
+         await createBaselineCommit(repository, { 'baseline.ts': 'baseline\n' })
+         await writeRepositoryFile(repository, 'previous.ts', 'previous\n')
+         git(repository, ['stash', 'push', '--include-untracked', '--message', 'Previous'])
+         await writeRepositoryFile(repository, 'created.ts', 'created\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-stash-fail-wrapper-'))
+         temporaryPaths.add(wrapperDirectory)
+         const realGit = execute('sh', ['-c', 'command -v git'], repository).stdout.trim()
+         const wrapper = join(wrapperDirectory, 'git')
+         await writeFile(
+            wrapper,
+            '#!/bin/sh\nif [ "$1" = "stash" ]; then echo "stash rejected" >&2; exit 1; fi\nexec "$REAL_GIT" "$@"\n',
+            'utf8'
+         )
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(repository, 'gitstash', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            REAL_GIT: realGit,
+         })
+         assert.notEqual(result.status, 0)
+         assert.match(result.stderr, /stash rejected/)
+         assert.equal(stashCount(repository), 1)
+         assert.match(git(repository, ['status', '--porcelain']), /created\.ts/)
+      }
+   )
 })
 
 describe('HEAD verification and recovery', () => {
