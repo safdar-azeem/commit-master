@@ -1,6 +1,6 @@
 # Git Commit CLI Toolkit
 
-A command-line toolkit offering a collection of utilities for automatic file commits and custom backdated timestamping commits.
+A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, and sharing changed files.
 
 ## Installation
 
@@ -110,7 +110,7 @@ Use `gitpaths` to copy the absolute paths of eligible uncommitted files:
 gitpaths
 ```
 
-It collects staged changes, unstaged tracked changes, and untracked non-ignored files from the complete resolved repository. Deleted paths are included, and a rename appears once under its new path. Results are deduplicated and sorted by path.
+It collects staged changes, unstaged tracked changes, and untracked non-ignored files from the complete resolved repository. Deleted paths are included, and a rename appears once under its new path. Results are deduplicated and sorted by path. Sensitive files remain visible as paths, but `gitpaths` never reads their contents.
 
 Example clipboard content:
 
@@ -121,7 +121,7 @@ Example clipboard content:
 /completeProjectPath/src/index.ts
 ```
 
-After a successful copy, the command prints only the number of copied paths. A clean tree does not overwrite the clipboard.
+After a successful copy, the command prints `8 file paths copied.` using the actual count. A clean tree does not overwrite the clipboard.
 
 ## Copy a Markdown Change Bundle
 
@@ -153,23 +153,46 @@ export const ready = true
 ------------------------------
 ````
 
-The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. Deleted files contain `[FILE DELETED]`. Binary or unsupported special-file content is represented by `[BINARY FILE OMITTED]` so it cannot corrupt the clipboard. Symbolic links are included as link text and are not followed outside the repository.
+The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. It uses these explicit placeholders:
+
+- `[SENSITIVE FILE OMITTED]` for environment files, credentials, private keys, and other protected files
+- `[FILE DELETED]` for deleted files
+- `[FILE NOT FOUND]` when a changed file disappears before it can be read
+- `[FILE UNREADABLE]` for inaccessible or replaced files
+- `[FILE TOO LARGE]` when one file exceeds 1 MiB
+- `[BINARY FILE OMITTED]` for binary or unsupported special-file content
+
+Commit Master never silently truncates file content. Individual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository.
+
+After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count.
 
 ## Default Clipboard Ignore Rules
 
-Both clipboard commands use one shared ignore policy. Git's own ignore rules are respected first. Commit Master also excludes common generated output, dependencies, locks, media, archives, databases, and documents, including:
+Both clipboard commands use one shared ignore policy. Git's own ignore rules are respected first. Commit Master additionally excludes:
 
-- `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, generated TypeScript files, `.DS_Store`, and Vite timestamp files
-- `node_modules`, `dist`, `.next`, `.nuxt`, `Pods`, migrations, caches, generated folders, and platform build output
-- logs, SQL/database artifacts, archives, native binaries, PDFs, office documents, CSV files, images, audio, and video
+- Exact names: `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `generated.ts`, `mongoose.gen.ts`, `resolvers.generated.ts`, `typeDefs.generated.ts`, `types.generated.ts`, `tsconfig.tsbuildinfo`, `tsconfig.node.tsbuildinfo`, and `.DS_Store`.
+- Generated patterns: `*.generated.ts` and `vite.config.ts.timestamp-*`.
+- Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `migrations`, `sql`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
+- Extensions: `.log`, `.sql`, `.onnx`, `.TAG`, `.pdf`, `.docx`, `.csv`, common image/audio/video formats, archives, database files, WebAssembly, and native binaries.
 
-`package.json` is intentionally included. The centralized rules apply identically to `gitpaths` and `gitbundle`.
+Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included. The centralized eligibility rules apply identically to `gitpaths` and `gitbundle`.
+
+Sensitive paths—including `.env` variants, private-key formats, credential JSON files, `.npmrc`, `.pypirc`, and `.netrc`—remain in the shared eligible list. `gitpaths` copies only their paths, while `gitbundle` replaces their content with `[SENSITIVE FILE OMITTED]`, even when the file is already tracked by Git.
+
+Control characters in copied path displays are escaped as readable sequences such as `\n`, `\r`, and `\t`; the real path remains unchanged for filesystem access. Markdown-sensitive heading characters are escaped without altering valid Unicode names.
 
 ## Clipboard and Platform Support
 
 Commit Master supports macOS, Windows, and Linux without shell-string execution. It uses the native macOS and Windows clipboard tools, with PowerShell preferred on Windows for reliable Unicode text. On Linux it uses the first available supported clipboard provider: `wl-copy`, `xclip`, `xsel`, PowerShell or `clip.exe` under WSL, or Termux clipboard tools.
 
-The command reports success only after the clipboard process exits successfully. If no supported clipboard provider is available, it exits with `Unable to copy to the clipboard.`
+The command reports success only after the clipboard process exits successfully. On Linux, if no supported provider is available, it reports:
+
+```text
+Unable to copy to the clipboard.
+Install wl-copy, xclip, or xsel.
+```
+
+Pressing Ctrl+C exits with status 130 and reports `Copy cancelled.` followed by `The clipboard was not updated.` Commit-specific counts are not shown for clipboard commands.
 
 ## How It Works
 
