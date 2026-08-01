@@ -16,6 +16,12 @@ Or with Yarn:
 yarn global add commit-master
 ```
 
+## Visual Studio Code Extension
+
+If you prefer to use this workflow inside Visual Studio Code, install the [Auto Commit Master extension](https://marketplace.visualstudio.com/items?itemName=SafdarAzeem.auto-commit-master) from the Visual Studio Marketplace.
+
+The extension provides the Visual Studio Code experience, while this package provides the `autocommit` and `commitspan` terminal commands.
+
 ## How to Use
 
 Open your Git project in the terminal, or navigate to the project directory:
