@@ -6,6 +6,7 @@ export interface GitRunOptions {
   category: string;
   env?: NodeJS.ProcessEnv;
   acceptedExitCodes?: readonly number[];
+  signal?: AbortSignal;
 }
 
 export interface GitRunResult {
@@ -41,6 +42,7 @@ export const runGit = (args: readonly string[], options: GitRunOptions): Promise
       env: createGitEnvironment(options.env),
       shell: false,
       windowsHide: true,
+      signal: options.signal,
       stdio: ['inherit', 'pipe', 'pipe'],
     });
     const stdout: Buffer[] = [];
