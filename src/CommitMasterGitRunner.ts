@@ -7,6 +7,7 @@ export interface GitRunOptions {
    env?: NodeJS.ProcessEnv
    acceptedExitCodes?: readonly number[]
    signal?: AbortSignal
+   input?: string | Buffer
 }
 
 export interface GitRunResult {
@@ -37,13 +38,15 @@ const createGitEnvironment = (overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 
 export const runGit = (args: readonly string[], options: GitRunOptions): Promise<GitRunResult> =>
    new Promise((resolve, reject) => {
+      let settled = false
+      let inputError: Error | undefined
       const child = spawn('git', [...args], {
          cwd: options.cwd,
          env: createGitEnvironment(options.env),
          shell: false,
          windowsHide: true,
          signal: options.signal,
-         stdio: ['inherit', 'pipe', 'pipe'],
+         stdio: [options.input === undefined ? 'inherit' : 'pipe', 'pipe', 'pipe'],
       })
       const stdout: Buffer[] = []
       const stderr: Buffer[] = []
@@ -51,6 +54,8 @@ export const runGit = (args: readonly string[], options: GitRunOptions): Promise
       child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk))
       child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk))
       child.once('error', (error) => {
+         if (settled) return
+         settled = true
          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
             reject(new GitUnavailableError({ cause: error }))
             return
@@ -58,6 +63,8 @@ export const runGit = (args: readonly string[], options: GitRunOptions): Promise
          reject(new GitCommandError(options.category, null, error.message))
       })
       child.once('close', (exitCode) => {
+         if (settled) return
+         settled = true
          const code = exitCode ?? -1
          const result = {
             stdout: Buffer.concat(stdout),
@@ -65,12 +72,24 @@ export const runGit = (args: readonly string[], options: GitRunOptions): Promise
             exitCode: code,
          }
          const accepted = options.acceptedExitCodes ?? [0]
-         if (accepted.includes(code)) {
+         if (accepted.includes(code) && !inputError) {
             resolve(result)
             return
          }
-         reject(new GitCommandError(options.category, exitCode, result.stderr.toString('utf8')))
+         reject(
+            new GitCommandError(
+               options.category,
+               exitCode,
+               inputError?.message || result.stderr.toString('utf8')
+            )
+         )
       })
+      if (options.input !== undefined && child.stdin) {
+         child.stdin.once('error', (error) => {
+            inputError = error
+         })
+         child.stdin.end(options.input)
+      }
    })
 
 export const gitText = async (args: readonly string[], options: GitRunOptions): Promise<string> => {
