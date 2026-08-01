@@ -6,6 +6,7 @@ import {
 } from './CommitMasterClipboardCommands.js'
 import { createExpandableDateSchedule } from './CommitMasterDates.js'
 import {
+   ClipboardInterruptedError,
    CommitInterruptedError,
    CommitMasterError,
    CommitOutcomeUnknownError,
@@ -139,15 +140,23 @@ export const runCli = async (command: CommandName, args: readonly string[]): Pro
    try {
       await runCommand(command, args, interruption)
    } catch (caught) {
-      const error =
-         interruption.isInterrupted() &&
-         !(caught instanceof CommitInterruptedError) &&
-         !(caught instanceof CommitOutcomeUnknownError)
-            ? new CommitInterruptedError(0, 0, { cause: caught, indexRestored: true })
-            : caught
+      const clipboardCommand = command === 'gitpaths' || command === 'gitbundle'
+      const error = interruption.isInterrupted()
+         ? clipboardCommand
+            ? caught instanceof ClipboardInterruptedError
+               ? caught
+               : new ClipboardInterruptedError({ cause: caught })
+            : !(caught instanceof CommitInterruptedError) &&
+                !(caught instanceof CommitOutcomeUnknownError)
+              ? new CommitInterruptedError(0, 0, { cause: caught, indexRestored: true })
+              : caught
+         : caught
       const message = error instanceof Error ? error.message : String(error)
       console.error(message)
-      process.exitCode = error instanceof CommitInterruptedError ? 130 : 1
+      process.exitCode =
+         error instanceof CommitInterruptedError || error instanceof ClipboardInterruptedError
+            ? 130
+            : 1
    } finally {
       interruption.dispose()
    }
