@@ -1,30 +1,46 @@
-import { formatCalendarDate, formatProgressTimestamp } from './CommitMasterDates.js';
-import type { CommitRequest, CommitResult, RepositoryContext } from './CommitMasterTypes.js';
+import { formatCalendarDate } from './CommitMasterDates.js';
+import type { CommitResult, RepositoryContext } from './CommitMasterTypes.js';
+
+export interface CommitspanOutputDetails {
+  requestedDuration: number;
+  effectiveDuration: number;
+  commitsPerDay: number;
+  startDate: Date;
+  endDate: Date;
+}
 
 export const printCommitspanSummary = (
   repository: RepositoryContext,
-  changedFiles: number,
-  startDate: Date,
-  endDate: Date,
-  commitsPerDay: number,
-  capacity: number,
+  commits: number,
+  details: CommitspanOutputDetails,
 ): void => {
+  console.log('Commit Master');
   console.log(`Repository: ${repository.name}`);
-  console.log(`Changed files: ${changedFiles}`);
-  console.log(`Date range: ${formatCalendarDate(startDate)} to ${formatCalendarDate(endDate)}`);
-  console.log(`Maximum commits per day: ${commitsPerDay}`);
-  console.log(`Available capacity: ${capacity}`);
+  console.log(`Commits to create: ${commits}`);
+  console.log(`Requested duration: ${details.requestedDuration} days`);
+  console.log(`Effective duration: ${details.effectiveDuration} days`);
+  console.log(`Date range: ${formatCalendarDate(details.startDate)} to ${formatCalendarDate(details.endDate)}`);
+  console.log(`Commits per day: ${details.commitsPerDay}`);
 };
 
-export const printProgress = (completed: number, total: number, request: CommitRequest): void => {
-  const timestamp = request.timestamp ? `${formatProgressTimestamp(request.timestamp)} ` : '';
-  console.log(`[${completed}/${total}] ${timestamp}${request.message}`);
+export const printAutocommitSummary = (repository: RepositoryContext, commits: number): void => {
+  console.log('Commit Master');
+  console.log(`Repository: ${repository.name}`);
+  console.log(`Commits to create: ${commits}`);
 };
 
-export const printCompletion = (result: CommitResult, historical: boolean): void => {
+export const printCompletion = (result: CommitResult, details?: CommitspanOutputDetails): void => {
   console.log('Completed successfully.');
   console.log(`Created commits: ${result.created}`);
-  if (historical && result.firstTimestamp && result.lastTimestamp) {
+  if (result.recoveredStagedEntries > 0) {
+    console.log(
+      `Recovered unexpected staged paths: ${result.recoveredStagedEntries} (working-tree content was preserved).`,
+    );
+  }
+  if (details && result.firstTimestamp && result.lastTimestamp) {
+    console.log(`Requested duration: ${details.requestedDuration} days`);
+    console.log(`Effective duration: ${details.effectiveDuration} days`);
+    console.log(`Maximum commits per day: ${details.commitsPerDay}`);
     console.log(`First commit date: ${formatCalendarDate(result.firstTimestamp)}`);
     console.log(`Last commit date: ${formatCalendarDate(result.lastTimestamp)}`);
   }
