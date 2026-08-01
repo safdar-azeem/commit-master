@@ -1,32 +1,32 @@
-export type ChangeKind = 'deleted' | 'modified' | 'renamed' | 'new';
+export type ChangeKind = 'deleted' | 'modified' | 'renamed' | 'new'
 
 export interface FileChange {
-  kind: ChangeKind;
-  path: string;
-  previousPath?: string;
+   kind: ChangeKind
+   path: string
+   previousPath?: string
 }
 
 export interface RepositoryContext {
-  root: string;
-  name: string;
-  headTimestampSeconds?: number;
-  inPlaceProgressSafe: boolean;
+   root: string
+   name: string
+   headTimestampSeconds?: number
+   inPlaceProgressSafe: boolean
 }
 
 export interface CommitRequest {
-  change: FileChange;
-  message: string;
-  timestamp?: Date;
+   change: FileChange
+   message: string
+   timestamp?: Date
 }
 
 export interface CommitResult {
-  created: number;
-  firstTimestamp?: Date;
-  lastTimestamp?: Date;
-  recoveredStagedEntries: number;
+   created: number
+   firstTimestamp?: Date
+   lastTimestamp?: Date
+   recoveredStagedEntries: number
 }
 
 export interface CommitProgressCallbacks {
-  onStart(request: CommitRequest, completed: number, total: number): void;
-  onCommit(request: CommitRequest, completed: number, total: number): void;
+   onStart(request: CommitRequest, completed: number, total: number): void
+   onCommit(request: CommitRequest, completed: number, total: number): void
 }
