@@ -23,6 +23,17 @@ import {
 } from '../dist/CommitMasterProgress.js'
 import { createProgressHeader } from '../dist/CommitMasterOutput.js'
 import { createCommitMessage } from '../dist/CommitMasterMessages.js'
+import {
+   createMarkdownBundle,
+   createSafeFence,
+   detectFenceLanguage,
+} from '../dist/CommitMasterBundle.js'
+import {
+   collectEligibleChanges,
+   isDefaultIgnoredPath,
+   resolveAbsoluteChangedPath,
+} from '../dist/CommitMasterChangedFiles.js'
+import { runClipboardCommand } from '../dist/CommitMasterClipboardCommands.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
 import { confirmGitInitialization, parseConfirmationAnswer } from '../dist/CommitMasterPrompt.js'
@@ -33,6 +44,8 @@ const commitspanBinary = fileURLToPath(
 const autocommitBinary = fileURLToPath(
    new URL('../dist/CommitMasterAutocommit.js', import.meta.url)
 )
+const gitpathsBinary = fileURLToPath(new URL('../dist/CommitMasterGitpaths.js', import.meta.url))
+const gitbundleBinary = fileURLToPath(new URL('../dist/CommitMasterGitbundle.js', import.meta.url))
 const temporaryPaths = new Set<string>()
 
 interface CommandResult {
@@ -103,13 +116,22 @@ const createBaselineCommit = async (
 
 const runCli = (
    repository: string,
-   command: 'commitspan' | 'autocommit',
+   command: 'commitspan' | 'autocommit' | 'gitpaths' | 'gitbundle',
    args: readonly string[] = [],
    environment?: NodeJS.ProcessEnv
 ): CommandResult =>
    execute(
       process.execPath,
-      [command === 'commitspan' ? commitspanBinary : autocommitBinary, ...args],
+      [
+         command === 'commitspan'
+            ? commitspanBinary
+            : command === 'autocommit'
+              ? autocommitBinary
+              : command === 'gitpaths'
+                ? gitpathsBinary
+                : gitbundleBinary,
+         ...args,
+      ],
       repository,
       {
          CI: '1',
@@ -216,10 +238,12 @@ describe('Git initialization', () => {
       await assert.rejects(access(join(project, '.git')))
    })
 
-   it('refuses to initialize or wait in non-interactive autocommit and commitspan runs', async () => {
+   it('refuses to initialize or wait in non-interactive runs for all four commands', async () => {
       for (const [command, args] of [
          ['autocommit', []],
          ['commitspan', ['10', '5']],
+         ['gitpaths', []],
+         ['gitbundle', []],
       ] as const) {
          const project = await createProject()
          await writeRepositoryFile(project, 'first.ts', 'first\n')
@@ -327,6 +351,77 @@ describe('change classification and paths', () => {
       assert.match(messages, /Add ümlaut\.ts/)
       assert.match(messages, /Add -feature\.ts/)
       assert.doesNotMatch(messages, /Add src\//)
+   })
+})
+
+describe('clipboard commands', () => {
+   it('collects a stable staged, unstaged, renamed, deleted, and untracked union', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, {
+         'modified.ts': 'before\n',
+         'deleted.ts': 'delete\n',
+         'old-name.ts': 'rename\n',
+      })
+      await writeRepositoryFile(repository, 'modified.ts', 'after\n')
+      await unlink(join(repository, 'deleted.ts'))
+      await rename(join(repository, 'old-name.ts'), join(repository, 'new-name.ts'))
+      await writeRepositoryFile(repository, 'package.json', '{"private":true}\n')
+      await writeRepositoryFile(repository, 'docs/guide.md', 'Example: ```ts\ncode\n```\n')
+      await writeRepositoryFile(repository, 'node_modules/ignored.js', 'ignored\n')
+      await writeRepositoryFile(repository, 'yarn.lock', 'ignored\n')
+      await writeFile(join(repository, 'unknown.bin'), Buffer.from([0, 1, 2, 3]))
+      git(repository, ['add', '--', 'modified.ts', 'old-name.ts', 'new-name.ts'])
+
+      const changes = await collectEligibleChanges(repository)
+      assert.deepEqual(
+         changes.map((change) => change.path),
+         ['deleted.ts', 'docs/guide.md', 'modified.ts', 'new-name.ts', 'package.json', 'unknown.bin']
+      )
+      assert.equal(changes.find((change) => change.path === 'new-name.ts')?.kind, 'renamed')
+      assert.equal(changes.find((change) => change.path === 'deleted.ts')?.kind, 'deleted')
+      assert.equal(isDefaultIgnoredPath('package.json'), false)
+      assert.equal(isDefaultIgnoredPath('src/generated.generated.ts'), true)
+      assert.equal(isDefaultIgnoredPath('src-tauri/target/release/app'), true)
+   })
+
+   it('builds language-aware, fence-safe Markdown with deletion and binary placeholders', async () => {
+      const repository = await createRepository()
+      await writeRepositoryFile(repository, 'docs/guide.md', 'Example: ```ts\ncode\n```\n')
+      await writeRepositoryFile(repository, 'vite.config.d.ts', 'export type Config = string\n')
+      await writeFile(join(repository, 'unknown.bin'), Buffer.from([0, 1, 2, 3]))
+      const bundle = await createMarkdownBundle(repository, [
+         { kind: 'deleted', path: 'src/OldFile.ts' },
+         { kind: 'modified', path: 'docs/guide.md' },
+         { kind: 'new', path: 'unknown.bin' },
+         { kind: 'new', path: 'vite.config.d.ts' },
+      ])
+
+      assert.ok(bundle.startsWith(`Repository: ${repository}\n\n`))
+      assert.match(bundle, /```text\n\[FILE DELETED\]\n```/)
+      assert.match(bundle, /````markdown\nExample: ```ts/)
+      assert.match(bundle, /```text\n\[BINARY FILE OMITTED\]\n```/)
+      assert.match(bundle, /```ts\nexport type Config = string/)
+      assert.ok(bundle.endsWith('------------------------------'))
+      assert.equal(detectFenceLanguage('env.d.ts'), 'ts')
+      assert.equal(detectFenceLanguage('file.unknown'), 'text')
+      assert.equal(createSafeFence('contains ``` here'), '````')
+   })
+
+   it('copies absolute paths and does not invoke the clipboard for a clean tree', async () => {
+      const repository = await createRepository()
+      await writeRepositoryFile(repository, 'src/new file.ts', 'new\n')
+      let copied = ''
+      await runClipboardCommand('gitpaths', repository, undefined, async (content) => {
+         copied = content
+      })
+      assert.equal(copied, resolveAbsoluteChangedPath(repository, 'src/new file.ts'))
+
+      await createBaselineCommit(repository, { 'src/new file.ts': 'new\n' })
+      let cleanClipboardCalled = false
+      await runClipboardCommand('gitbundle', repository, undefined, async () => {
+         cleanClipboardCalled = true
+      })
+      assert.equal(cleanClipboardCalled, false)
    })
 })
 
