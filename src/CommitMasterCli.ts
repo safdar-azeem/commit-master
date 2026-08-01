@@ -1,8 +1,15 @@
 import { commitChanges } from './CommitMasterCommitService.js';
-import { createDateSchedule } from './CommitMasterDates.js';
-import { CommitMasterError } from './CommitMasterErrors.js';
+import { createExpandableDateSchedule } from './CommitMasterDates.js';
+import { CommitInterruptedError, CommitMasterError } from './CommitMasterErrors.js';
+import { InterruptionController } from './CommitMasterInterruption.js';
 import { createCommitMessage } from './CommitMasterMessages.js';
-import { printCommitspanSummary, printCompletion, printProgress } from './CommitMasterOutput.js';
+import {
+  printAutocommitSummary,
+  printCommitspanSummary,
+  printCompletion,
+  type CommitspanOutputDetails,
+} from './CommitMasterOutput.js';
+import { CommitProgressReporter } from './CommitMasterProgress.js';
 import { prepareRepository, readChanges, validateCommitReadiness } from './CommitMasterRepository.js';
 import type { CommitRequest } from './CommitMasterTypes.js';
 
@@ -35,9 +42,15 @@ const parseCommitspanArguments = (args: readonly string[]): { duration: number; 
   return { duration, commitsPerDay };
 };
 
-export const runCommand = async (command: CommandName, args: readonly string[]): Promise<void> => {
+export const runCommand = async (
+  command: CommandName,
+  args: readonly string[],
+  interruption: InterruptionController,
+): Promise<void> => {
   const span = command === 'commitspan' ? parseCommitspanArguments(args) : undefined;
-  if (command === 'autocommit' && args.length !== 0) throw new CommitMasterError(`autocommit does not accept arguments.\n\n${USAGE}`);
+  if (command === 'autocommit' && args.length !== 0) {
+    throw new CommitMasterError(`autocommit does not accept arguments.\n\n${USAGE}`);
+  }
 
   const executionTime = new Date();
   const repository = await prepareRepository(process.cwd());
@@ -46,50 +59,62 @@ export const runCommand = async (command: CommandName, args: readonly string[]):
     console.log('Nothing to commit. The working tree is clean.');
     return;
   }
+  interruption.throwIfInterrupted(0, changes.length);
   await validateCommitReadiness(repository, executionTime);
 
   let requests: CommitRequest[];
+  let spanDetails: CommitspanOutputDetails | undefined;
   if (span) {
-    const schedule = createDateSchedule(
+    const schedule = createExpandableDateSchedule(
       span.duration,
       span.commitsPerDay,
+      changes.length,
       executionTime,
       repository.headTimestampSeconds,
     );
-    printCommitspanSummary(
-      repository,
-      changes.length,
-      schedule.startDate,
-      schedule.endDate,
-      span.commitsPerDay,
-      schedule.timestamps.length,
-    );
-    if (changes.length > schedule.timestamps.length) {
-      throw new CommitMasterError(
-        `Commit span capacity is ${schedule.timestamps.length} commits, but ${changes.length} file changes were found.\nIncrease the duration or commits-per-day value. No commits were created.`,
-      );
-    }
+    spanDetails = {
+      requestedDuration: schedule.requestedDuration,
+      effectiveDuration: schedule.effectiveDuration,
+      commitsPerDay: span.commitsPerDay,
+      startDate: schedule.startDate,
+      endDate: schedule.endDate,
+    };
+    printCommitspanSummary(repository, changes.length, spanDetails);
     requests = changes.map((change, index) => ({
       change,
       message: createCommitMessage(change),
       timestamp: schedule.timestamps[index],
     }));
   } else {
-    console.log(`Repository: ${repository.name}`);
-    console.log(`Changed files: ${changes.length}`);
+    printAutocommitSummary(repository, changes.length);
     requests = changes.map((change) => ({ change, message: createCommitMessage(change) }));
   }
 
-  const result = await commitChanges(repository, requests, printProgress);
-  printCompletion(result, command === 'commitspan');
+  const progress = new CommitProgressReporter(repository, requests.length);
+  progress.start();
+  try {
+    const result = await commitChanges(repository, requests, progress, interruption);
+    progress.complete();
+    printCompletion(result, spanDetails);
+  } catch (error) {
+    progress.fail(error instanceof CommitInterruptedError || interruption.isInterrupted());
+    throw error;
+  }
 };
 
 export const runCli = async (command: CommandName, args: readonly string[]): Promise<void> => {
+  const interruption = new InterruptionController();
+  interruption.install();
   try {
-    await runCommand(command, args);
-  } catch (error) {
+    await runCommand(command, args, interruption);
+  } catch (caught) {
+    const error = interruption.isInterrupted() && !(caught instanceof CommitInterruptedError)
+      ? new CommitInterruptedError(0, 0, { cause: caught, indexRestored: true })
+      : caught;
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
-    process.exitCode = 1;
+    process.exitCode = error instanceof CommitInterruptedError ? 130 : 1;
+  } finally {
+    interruption.dispose();
   }
 };
