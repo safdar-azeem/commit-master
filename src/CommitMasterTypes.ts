@@ -22,4 +22,10 @@ export interface CommitResult {
   created: number;
   firstTimestamp?: Date;
   lastTimestamp?: Date;
+  recoveredStagedEntries: number;
+}
+
+export interface CommitProgressCallbacks {
+  onStart(request: CommitRequest, completed: number, total: number): void;
+  onCommit(request: CommitRequest, completed: number, total: number): void;
 }
