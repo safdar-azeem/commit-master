@@ -359,6 +359,82 @@ describe('gitspan', () => {
       assert.match(clean.stdout, /commit-master-test-/)
       assert.match(clean.stdout, /Nothing to commit\. The working tree is clean\./)
    })
+
+   it('ignores a recent HEAD timestamp when distributing historical commits', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'baseline.ts': 'baseline\n' })
+      const headTimestamp = Number(git(repository, ['show', '-s', '--format=%ct', 'HEAD']))
+      for (let index = 0; index < 119; index += 1) {
+         await writeRepositoryFile(
+            repository,
+            `src/change-${String(index).padStart(3, '0')}.ts`,
+            `${index}\n`
+         )
+      }
+
+      const before = Math.floor(Date.now() / 1000)
+      const result = runCli(repository, 'gitspan', ['10', '5'])
+      const after = Math.ceil(Date.now() / 1000)
+
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(commitCount(repository), 120)
+      assert.match(result.stdout, /119 commits · 24 days · 5\/day/)
+      assert.doesNotMatch(result.stderr, /HEAD timestamp|before HEAD/)
+
+      const timestamps = git(repository, ['log', '--reverse', '--format=%at'])
+         .split('\n')
+         .map(Number)
+      assert.equal(timestamps.length, 120)
+      assert.equal(timestamps[0], headTimestamp)
+      const created = timestamps.slice(1)
+      assert.ok((created[0] ?? 0) < headTimestamp)
+      for (let index = 1; index < created.length; index += 1) {
+         assert.ok((created[index] ?? 0) > (created[index - 1] ?? 0))
+      }
+      assert.ok((created.at(-1) ?? 0) <= after)
+      assert.ok((created.at(-1) ?? 0) >= before - 24 * 24 * 60 * 60)
+
+      const dates = git(repository, [
+         'log',
+         '--reverse',
+         '--format=%ad',
+         '--date=format-local:%Y-%m-%d',
+         'HEAD~119..HEAD',
+      ]).split('\n')
+      const perDay = new Map<string, number>()
+      for (const date of dates) perDay.set(date, (perDay.get(date) ?? 0) + 1)
+      assert.equal(perDay.size, 24)
+      for (const count of perDay.values()) assert.ok(count <= 5)
+   })
+
+   it('keeps the requested duration when it already covers the required historical days', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'baseline.ts': 'baseline\n' })
+      for (let index = 0; index < 119; index += 1) {
+         await writeRepositoryFile(
+            repository,
+            `src/change-${String(index).padStart(3, '0')}.ts`,
+            `${index}\n`
+         )
+      }
+
+      const result = runCli(repository, 'gitspan', ['30', '5'])
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(commitCount(repository), 120)
+      assert.match(result.stdout, /119 commits · 30 days · 5\/day/)
+
+      const dates = git(repository, [
+         'log',
+         '--reverse',
+         '--format=%ad',
+         '--date=format-local:%Y-%m-%d',
+         'HEAD~119..HEAD',
+      ]).split('\n')
+      const perDay = new Map<string, number>()
+      for (const date of dates) perDay.set(date, (perDay.get(date) ?? 0) + 1)
+      assert.equal(perDay.size, 24)
+      for (const count of perDay.values()) assert.ok(count <= 5)
+   })
 })
 
 describe('change classification and paths', () => {
