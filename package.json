@@ -1,6 +1,6 @@
 {
   "name": "commit-master",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Git utilities for per-file commits, historical scheduling, sharing changes, and safe project stashing.",
   "type": "module",
   "bin": {
