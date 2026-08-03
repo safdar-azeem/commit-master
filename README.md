@@ -99,9 +99,9 @@ Arguments:
 5 = maximum commits per day
 ```
 
-The command automatically calculates how many days are required based on the number of changed files.
+The command automatically calculates how many days are required based on the number of changed files. Scheduling ignores the existing `HEAD` commit timestamp and only uses historical dates up through the current time, so a recent latest commit does not reduce capacity.
 
-For example, 58 file changes with a limit of 5 commits per day will be distributed across 12 days.
+For example, 58 file changes with a limit of 5 commits per day will be distributed across 12 days. With 119 changes and `gitspan 10 5`, the range expands to 24 days.
 
 ## Copy Changed File Paths
 
@@ -255,8 +255,8 @@ The toolkit:
 - Creates one commit for each logical file change.
 - Generates a clear commit message from the change type.
 - Uses the current timestamp with `gitauto`.
-- Generates chronological backdated timestamps with `gitspan`.
-- Automatically expands the date range when more days are required.
+- Generates chronological backdated timestamps with `gitspan`, independent of the existing `HEAD` timestamp.
+- Automatically expands the date range further into the past when more days are required.
 - Copies absolute changed-file paths with `gitpaths`.
 - Creates complete Markdown change bundles with `gitbundle`.
 - Saves staged, unstaged, and untracked project changes with `gitstash`.
