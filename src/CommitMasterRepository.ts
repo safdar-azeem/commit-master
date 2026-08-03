@@ -2,7 +2,7 @@ import { access } from 'node:fs/promises'
 import path from 'node:path'
 import { CommitMasterError, GitCommandError } from './CommitMasterErrors.js'
 import { gitText, runGit } from './CommitMasterGitRunner.js'
-import { parseWorkingTreeStatus } from './CommitMasterStatus.js'
+import { mergeContentIdenticalRenames, parseWorkingTreeStatus } from './CommitMasterStatus.js'
 import type { FileChange, RepositoryContext } from './CommitMasterTypes.js'
 
 const exists = async (target: string): Promise<boolean> => {
@@ -207,6 +207,57 @@ export const validateCommitReadiness = async (
    }
 }
 
+const blobIdForHeadPath = async (root: string, relativePath: string): Promise<string | undefined> => {
+   const result = await runGit(['rev-parse', '--verify', `HEAD:${relativePath}`], {
+      cwd: root,
+      category: 'Rename content lookup',
+      acceptedExitCodes: [0, 128],
+   })
+   if (result.exitCode !== 0) return undefined
+   const oid = result.stdout.toString('utf8').trim()
+   return oid || undefined
+}
+
+const blobIdForWorktreePath = async (
+   root: string,
+   relativePath: string
+): Promise<string | undefined> => {
+   try {
+      const oid = await gitText(['hash-object', '--', relativePath], {
+         cwd: root,
+         category: 'Rename content lookup',
+      })
+      return oid || undefined
+   } catch {
+      return undefined
+   }
+}
+
+const resolveUnstagedRenames = async (
+   root: string,
+   changes: FileChange[]
+): Promise<FileChange[]> => {
+   const deleted = changes.filter((change) => change.kind === 'deleted')
+   const created = changes.filter((change) => change.kind === 'new')
+   if (deleted.length === 0 || created.length === 0) return changes
+
+   const deletedBlobIds = new Map<string, string>()
+   const createdBlobIds = new Map<string, string>()
+   await Promise.all(
+      deleted.map(async (change) => {
+         const oid = await blobIdForHeadPath(root, change.path)
+         if (oid) deletedBlobIds.set(change.path, oid)
+      })
+   )
+   await Promise.all(
+      created.map(async (change) => {
+         const oid = await blobIdForWorktreePath(root, change.path)
+         if (oid) createdBlobIds.set(change.path, oid)
+      })
+   )
+   return mergeContentIdenticalRenames(changes, deletedBlobIds, createdBlobIds)
+}
+
 export const readChanges = async (repository: Pick<RepositoryContext, 'root'>): Promise<FileChange[]> => {
    const status = await runGit(
       ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--renames'],
@@ -215,5 +266,5 @@ export const readChanges = async (repository: Pick<RepositoryContext, 'root'>): 
          category: 'Working-tree inspection',
       }
    )
-   return parseWorkingTreeStatus(status.stdout)
+   return resolveUnstagedRenames(repository.root, parseWorkingTreeStatus(status.stdout))
 }
