@@ -120,8 +120,7 @@ export const runCommand = async (
          span.duration,
          span.commitsPerDay,
          changes.length,
-         executionTime,
-         repository.headTimestampSeconds
+         executionTime
       )
       spanDetails = {
          requestedDuration: schedule.requestedDuration,
