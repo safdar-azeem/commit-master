@@ -14,15 +14,12 @@ const startOfLocalDay = (date: Date): Date =>
 const withLocalTime = (day: Date, hours: number, minutes: number, seconds: number): Date =>
    new Date(day.getFullYear(), day.getMonth(), day.getDate(), hours, minutes, seconds, 0)
 
-const createDaySlots = (day: Date, maximum: number, now: Date, minimumExclusive?: Date): Date[] => {
+const createDaySlots = (day: Date, maximum: number, now: Date): Date[] => {
    const isToday = startOfLocalDay(day).getTime() === startOfLocalDay(now).getTime()
    let lower = withLocalTime(day, 9, 0, 0)
    let upper = isToday ? now : withLocalTime(day, 17, 0, 0)
 
    if (isToday && upper.getTime() < lower.getTime()) lower = startOfLocalDay(day)
-   if (minimumExclusive && minimumExclusive.getTime() >= lower.getTime()) {
-      lower = new Date(minimumExclusive.getTime() + 1000)
-   }
    if (!isToday && lower.getTime() > upper.getTime()) upper = withLocalTime(day, 23, 59, 59)
    if (lower.getTime() > upper.getTime()) return []
 
@@ -40,20 +37,17 @@ const createDaySlots = (day: Date, maximum: number, now: Date, minimumExclusive?
 const buildSchedule = (
    duration: number,
    commitsPerDay: number,
-   executionTime: Date,
-   headTimestampSeconds?: number
+   executionTime: Date
 ): Omit<DateSchedule, 'requestedDuration' | 'effectiveDuration'> => {
    const endDate = startOfLocalDay(executionTime)
    const startDate = new Date(endDate)
    startDate.setDate(startDate.getDate() - duration + 1)
-   const minimum =
-      headTimestampSeconds === undefined ? undefined : new Date(headTimestampSeconds * 1000)
    const timestamps: Date[] = []
 
    for (let offset = 0; offset < duration; offset += 1) {
       const day = new Date(startDate)
       day.setDate(startDate.getDate() + offset)
-      timestamps.push(...createDaySlots(day, commitsPerDay, executionTime, minimum))
+      timestamps.push(...createDaySlots(day, commitsPerDay, executionTime))
    }
    return { startDate, endDate, timestamps }
 }
@@ -62,19 +56,13 @@ export const createExpandableDateSchedule = (
    requestedDuration: number,
    commitsPerDay: number,
    requiredCommits: number,
-   executionTime: Date,
-   headTimestampSeconds?: number
+   executionTime: Date
 ): DateSchedule => {
    let effectiveDuration = Math.max(requestedDuration, Math.ceil(requiredCommits / commitsPerDay))
    let previousCapacity = -1
 
    while (Number.isSafeInteger(effectiveDuration)) {
-      const schedule = buildSchedule(
-         effectiveDuration,
-         commitsPerDay,
-         executionTime,
-         headTimestampSeconds
-      )
+      const schedule = buildSchedule(effectiveDuration, commitsPerDay, executionTime)
       if (schedule.timestamps.length >= requiredCommits) {
          return {
             requestedDuration,
@@ -86,8 +74,8 @@ export const createExpandableDateSchedule = (
       }
       if (schedule.timestamps.length === previousCapacity) {
          throw new CommitMasterError(
-            `The existing HEAD timestamp leaves only ${schedule.timestamps.length} chronological commit slots through the current time. ` +
-               `${requiredCommits} commits cannot be created without exceeding ${commitsPerDay} commits per day, using future timestamps, or dating a new commit before HEAD.`
+            `Only ${schedule.timestamps.length} chronological commit slots are available through the current time. ` +
+               `${requiredCommits} commits cannot be created without exceeding ${commitsPerDay} commits per day or using future timestamps.`
          )
       }
       previousCapacity = schedule.timestamps.length
