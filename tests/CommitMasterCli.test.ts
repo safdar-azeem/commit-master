@@ -91,7 +91,7 @@ const git = (repository: string, args: readonly string[]): string => {
 }
 
 const createRepository = async (): Promise<string> => {
-   const repository = await mkdtemp(join(tmpdir(), 'commit-master-test-'))
+   const repository = await realpath(await mkdtemp(join(tmpdir(), 'commit-master-test-')))
    temporaryPaths.add(repository)
    git(repository, ['init', '--quiet'])
    git(repository, ['config', 'user.name', 'Commit Master Test'])
@@ -101,7 +101,7 @@ const createRepository = async (): Promise<string> => {
 }
 
 const createProject = async (): Promise<string> => {
-   const project = await mkdtemp(join(tmpdir(), 'commit-master-project-'))
+   const project = await realpath(await mkdtemp(join(tmpdir(), 'commit-master-project-')))
    temporaryPaths.add(project)
    return project
 }
