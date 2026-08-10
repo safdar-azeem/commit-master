@@ -27,6 +27,7 @@ import { createProgressHeader } from '../dist/CommitMasterOutput.js'
 import { createCommitMessage } from '../dist/CommitMasterMessages.js'
 import {
    MAX_BUNDLE_BYTES,
+   createCombinedMarkdownBundle,
    createMarkdownBundle,
    createSafeFence,
    detectFenceLanguage,
@@ -43,7 +44,16 @@ import {
 import {
    clipboardSuccessMessage,
    runClipboardCommand,
+   runWorkspaceBundleCommand,
 } from '../dist/CommitMasterClipboardCommands.js'
+import {
+   deleteSavedWorkspace,
+   discoverWorkspaceRepositories,
+   loadSavedWorkspace,
+   readSavedWorkspaces,
+   resolveExplicitRepositories,
+   saveWorkspace,
+} from '../dist/CommitMasterWorkspaces.js'
 import { copyToClipboard } from '../dist/CommitMasterClipboard.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
@@ -654,6 +664,24 @@ describe('clipboard commands', () => {
       assert.equal(createSafeFence('contains `````````` here').length, 11)
    })
 
+   it('builds one bounded Markdown document with clear repository boundaries', async () => {
+      const app = await createRepository()
+      const api = await createRepository()
+      await writeRepositoryFile(app, 'src/App.vue', '<template />\n')
+      await writeRepositoryFile(api, 'src/server.ts', 'export const ready = true\n')
+
+      const bundle = await createCombinedMarkdownBundle([
+         { root: app, name: 'erp-app', changes: [{ kind: 'new', path: 'src/App.vue' }] },
+         { root: api, name: 'erp-api', changes: [{ kind: 'new', path: 'src/server.ts' }] },
+      ])
+
+      assert.match(bundle, /^# Repository Bundle\n\nRepositories: 2\nFiles: 2/m)
+      assert.match(bundle, /## erp-app\n\nPath: .*\nChanged files: 1/)
+      assert.match(bundle, /## erp-api\n\nPath: .*\nChanged files: 1/)
+      assert.match(bundle, /```vue\n<template \/>/)
+      assert.match(bundle, /```ts\nexport const ready/)
+   })
+
    it('handles missing, unreadable, and oversized files without truncating content', async () => {
       const repository = await createRepository()
       await mkdir(join(repository, 'replaced-with-directory'))
@@ -796,6 +824,49 @@ describe('clipboard commands', () => {
          cleanClipboardCalled = true
       })
       assert.equal(cleanClipboardCalled, false)
+   })
+
+   it('deduplicates explicit roots, discovers child repositories, and leaves the clipboard intact when clean', async () => {
+      const workspace = await createProject()
+      const app = join(workspace, 'erp-app')
+      const api = join(workspace, 'erp-api')
+      await mkdir(app)
+      await mkdir(api)
+      for (const repository of [app, api]) {
+         git(repository, ['init', '--quiet'])
+         git(repository, ['config', 'user.name', 'Commit Master Test'])
+         git(repository, ['config', 'user.email', 'commit-master@example.invalid'])
+      }
+      await writeRepositoryFile(app, 'src/app.ts', 'app\n')
+
+      assert.deepEqual(await resolveExplicitRepositories([app, join(app, 'src'), app]), [await realpath(app)])
+      assert.deepEqual(
+         await discoverWorkspaceRepositories(workspace),
+         [await realpath(api), await realpath(app)].sort()
+      )
+      let copied = false
+      await runWorkspaceBundleCommand([api], undefined, async () => {
+         copied = true
+      })
+      assert.equal(copied, false)
+   })
+
+   it('persists and resolves named workspaces without storing file content', async () => {
+      const configuration = await createProject()
+      const repository = await createRepository()
+      const configVariable = process.platform === 'win32' ? 'APPDATA' : 'XDG_CONFIG_HOME'
+      const originalConfigHome = process.env[configVariable]
+      process.env[configVariable] = configuration
+      try {
+         await saveWorkspace('erp', [repository])
+         assert.deepEqual(await readSavedWorkspaces(), [{ name: 'erp', repositories: [repository] }])
+         assert.deepEqual(await loadSavedWorkspace('erp'), [repository])
+         await deleteSavedWorkspace('erp')
+         assert.deepEqual(await readSavedWorkspaces(), [])
+      } finally {
+         if (originalConfigHome === undefined) delete process.env[configVariable]
+         else process.env[configVariable] = originalConfigHome
+      }
    })
 })
 
