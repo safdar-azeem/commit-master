@@ -24,12 +24,6 @@ pnpm add --global commit-master
 
 One global installation exposes all five commands: `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, and `gitstash`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
 
-## Visual Studio Code Extension
-
-If you prefer to use this workflow inside Visual Studio Code, install the [Auto Commit Master extension](https://marketplace.visualstudio.com/items?itemName=SafdarAzeem.auto-commit-master) from the Visual Studio Marketplace.
-
-The extension provides the Visual Studio Code experience, while this package provides the `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, and `gitstash` terminal commands.
-
 ## How to Use
 
 Open your Git project in the terminal, or navigate to the project directory:
@@ -45,6 +39,12 @@ gitauto
 gitspan <duration> <commits-per-day>
 gitpaths
 gitbundle
+gitbundle ./frontend ./api
+gitbundle --all [workspace-path]
+gitbundle --save <name> ./frontend ./api
+gitbundle @<name>
+gitbundle --list
+gitbundle --delete <name>
 gitstash ["stash title"]
 ```
 
@@ -63,7 +63,7 @@ Press Enter or answer Yes to initialize Git in the current directory and continu
 
 CI, redirected input, and other non-interactive environments never initialize Git or wait for input. They ask you to initialize Git before running Commit Master. Git identity is never created or changed automatically.
 
-This initialization flow applies to all five commands. After confirmation, the original command continues automatically in the newly initialized repository.
+This initialization flow applies to the normal current-repository commands. `gitbundle` workspace discovery and explicit repository paths never initialize a directory; they only use Git repositories that already exist. After confirmation, the original command continues automatically in the newly initialized repository.
 
 ## Automatic File Commits
 
@@ -166,6 +166,65 @@ The bundle uses an extension-appropriate code-fence language and automatically l
 Commit Master never silently truncates file content. Individual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository.
 
 After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count.
+
+### Bundle Multiple Repositories
+
+The no-argument command remains the single-repository workflow shown above. To review several repositories together, pass their roots (or directories inside them) to `gitbundle`:
+
+```bash
+gitbundle ./web-client ./api-service
+gitbundle /path/to/workspace/web-client /path/to/workspace/api-service
+```
+
+Paths are resolved to Git roots and duplicate repositories are included once. The command makes one clipboard update only after all changed-file content has been read and the complete combined bundle passes the same 10 MiB safety limit. Its Markdown makes repository boundaries explicit:
+
+````markdown
+# Repository Bundle
+
+Repositories: 2
+Files: 7
+
+## web-client
+
+Path: /path/to/workspace/web-client
+Changed files: 5
+
+### /path/to/workspace/web-client/src/App.vue
+
+```vue
+<!-- changed content -->
+```
+````
+
+Use `--all` to discover repositories below a workspace directory:
+
+```bash
+gitbundle --all
+gitbundle --all /path/to/workspace
+```
+
+Discovery is bounded to three directory levels and skips `.git`, dependency, build, cache, and other heavy generated directories. Once it finds a repository it does not scan through it. A clean repository is reported and excluded from the bundle; if every selected repository is clean, the existing clipboard content is left untouched.
+
+### Save and Reuse Workspaces
+
+Save a resolved set of repositories for use from any terminal directory:
+
+```bash
+gitbundle --save project-workspace ./web-client ./api-service
+gitbundle --all --save project-workspace
+gitbundle @project-workspace
+```
+
+Saved workspaces contain only a name and repository paths in the current user's Commit Master configuration directory (`$XDG_CONFIG_HOME/commit-master` or `~/.config/commit-master` on macOS/Linux, and `%APPDATA%\\commit-master` on Windows). No file contents or Git changes are stored.
+
+Manage saved workspaces with:
+
+```bash
+gitbundle --list
+gitbundle --delete project-workspace
+```
+
+Workspace names use letters, numbers, hyphens, and underscores. If a saved repository has been moved or deleted, `gitbundle @name` reports every unavailable path and does not substitute a different repository.
 
 ## Default Clipboard Ignore Rules
 
@@ -312,10 +371,6 @@ Stash all project changes with a custom title:
 ```bash
 gitstash "Work in progress"
 ```
-
-## Author
-
-[Safdar Azeem](https://github.com/safdar-azeem)
 
 ## License
 
