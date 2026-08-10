@@ -2,6 +2,7 @@ import { commitChanges } from './CommitMasterCommitService.js'
 import { ensureGitRepository } from './CommitMasterBootstrap.js'
 import {
    runClipboardCommand,
+   runWorkspaceBundleCommand,
    type ClipboardCommandName,
 } from './CommitMasterClipboardCommands.js'
 import { createExpandableDateSchedule } from './CommitMasterDates.js'
@@ -24,6 +25,14 @@ import {
 } from './CommitMasterRepository.js'
 import type { CommitRequest } from './CommitMasterTypes.js'
 import { DEFAULT_STASH_TITLE, runStashCommand } from './CommitMasterStash.js'
+import {
+   deleteSavedWorkspace,
+   discoverWorkspaceRepositories,
+   loadSavedWorkspace,
+   readSavedWorkspaces,
+   resolveExplicitRepositories,
+   saveWorkspace,
+} from './CommitMasterWorkspaces.js'
 
 export type CommandName = 'gitspan' | 'gitauto' | ClipboardCommandName | 'gitstash'
 
@@ -36,6 +45,13 @@ export const USAGE = `Usage:
   gitauto
   gitpaths
   gitbundle
+  gitbundle <repository-path> [...repository-path]
+  gitbundle --all [workspace-path]
+  gitbundle --save <name> <repository-path> [...repository-path]
+  gitbundle --all --save <name> [workspace-path]
+  gitbundle @<workspace-name>
+  gitbundle --list
+  gitbundle --delete <workspace-name>
   gitstash ["stash title"]
 
 Examples:
@@ -43,6 +59,10 @@ Examples:
   gitauto
   gitpaths
   gitbundle
+  gitbundle ./app ./api
+  gitbundle --all ./workspace
+  gitbundle --all --save erp
+  gitbundle @erp
   gitstash "Work in progress"`
 
 const positiveInteger = (value: string | undefined): number | undefined => {
@@ -68,11 +88,114 @@ const parseGitspanArguments = (
    return { duration, commitsPerDay }
 }
 
+type GitbundleArguments =
+   | { kind: 'single' }
+   | { kind: 'explicit'; paths: string[]; saveName?: string }
+   | { kind: 'discover'; workspacePath: string; saveName?: string }
+   | { kind: 'saved'; name: string }
+   | { kind: 'list' }
+   | { kind: 'delete'; name: string }
+
+const gitbundleUsageError = (): CommitMasterError =>
+   new CommitMasterError(`Invalid gitbundle arguments.\n\n${USAGE}`)
+
+const parseGitbundleArguments = (args: readonly string[], cwd: string): GitbundleArguments => {
+   if (args.length === 0) return { kind: 'single' }
+   if (args[0] === '--list') {
+      if (args.length !== 1) throw gitbundleUsageError()
+      return { kind: 'list' }
+   }
+   if (args[0] === '--delete') {
+      if (args.length !== 2) throw gitbundleUsageError()
+      return { kind: 'delete', name: args[1] ?? '' }
+   }
+   if (args[0]?.startsWith('@')) {
+      if (args.length !== 1 || args[0].length === 1) throw gitbundleUsageError()
+      return { kind: 'saved', name: args[0].slice(1) }
+   }
+
+   let all = false
+   let saveName: string | undefined
+   const paths: string[] = []
+   for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index]
+      if (argument === '--all') {
+         if (all) throw gitbundleUsageError()
+         all = true
+         continue
+      }
+      if (argument === '--save') {
+         if (saveName !== undefined || index + 1 >= args.length) throw gitbundleUsageError()
+         const requestedName = args[index + 1]
+         if (!requestedName) throw gitbundleUsageError()
+         saveName = requestedName
+         index += 1
+         continue
+      }
+      if (argument?.startsWith('--') || !argument) throw gitbundleUsageError()
+      paths.push(argument)
+   }
+   if (all) {
+      if (paths.length > 1) throw gitbundleUsageError()
+      return { kind: 'discover', workspacePath: paths[0] ?? cwd, saveName }
+   }
+   if (paths.length === 0) throw gitbundleUsageError()
+   return { kind: 'explicit', paths, saveName }
+}
+
+const runGitbundle = async (
+   args: readonly string[],
+   cwd: string,
+   interruption: InterruptionController
+): Promise<void> => {
+   const parsed = parseGitbundleArguments(args, cwd)
+   if (parsed.kind === 'list') {
+      const workspaces = await readSavedWorkspaces()
+      if (workspaces.length === 0) {
+         console.log('No saved workspaces.')
+         return
+      }
+      for (const workspace of workspaces) {
+         console.log(`${workspace.name}: ${workspace.repositories.length} repositories`)
+         for (const repository of workspace.repositories) console.log(`  ${repository}`)
+      }
+      return
+   }
+   if (parsed.kind === 'delete') {
+      await deleteSavedWorkspace(parsed.name)
+      console.log(`Saved workspace "${parsed.name}" deleted.`)
+      return
+   }
+   if (parsed.kind === 'single') {
+      if (!(await ensureGitRepository(cwd, interruption))) return
+      interruption.throwIfInterrupted(0, 0)
+      await runClipboardCommand('gitbundle', cwd, interruption.signal)
+      return
+   }
+
+   const repositories =
+      parsed.kind === 'saved'
+         ? await loadSavedWorkspace(parsed.name)
+         : parsed.kind === 'discover'
+           ? await discoverWorkspaceRepositories(parsed.workspacePath)
+           : await resolveExplicitRepositories(parsed.paths)
+   if (parsed.kind !== 'saved' && parsed.saveName) {
+      await saveWorkspace(parsed.saveName, repositories)
+      console.log(`Saved workspace "${parsed.saveName}" with ${repositories.length} repositories.`)
+   }
+   interruption.throwIfInterrupted(0, 0)
+   await runWorkspaceBundleCommand(repositories, interruption.signal)
+}
+
 export const runCommand = async (
    command: CommandName,
    args: readonly string[],
    interruption: InterruptionController
 ): Promise<void> => {
+   if (command === 'gitbundle') {
+      await runGitbundle(args, process.cwd(), interruption)
+      return
+   }
    const span = command === 'gitspan' ? parseGitspanArguments(args) : undefined
    const stash =
       command === 'gitstash'
@@ -91,7 +214,7 @@ export const runCommand = async (
    const cwd = process.cwd()
    if (!(await ensureGitRepository(cwd, interruption))) return
 
-   if (command === 'gitpaths' || command === 'gitbundle') {
+   if (command === 'gitpaths') {
       interruption.throwIfInterrupted(0, 0)
       await runClipboardCommand(command, cwd, interruption.signal)
       return
