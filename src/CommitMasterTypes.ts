@@ -30,3 +30,8 @@ export interface CommitProgressCallbacks {
    onStart(request: CommitRequest, completed: number, total: number): void
    onCommit(request: CommitRequest, completed: number, total: number): void
 }
+
+export interface SavedWorkspace {
+   name: string
+   repositories: string[]
+}
