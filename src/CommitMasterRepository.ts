@@ -1,8 +1,13 @@
-import { access } from 'node:fs/promises'
+import { access, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { CommitMasterError, GitCommandError } from './CommitMasterErrors.js'
 import { gitText, runGit } from './CommitMasterGitRunner.js'
-import { mergeContentIdenticalRenames, parseWorkingTreeStatus } from './CommitMasterStatus.js'
+import {
+   mergeContentIdenticalRenames,
+   mergeDetectedRenames,
+   parseWorkingTreeStatus,
+} from './CommitMasterStatus.js'
 import type { FileChange, RepositoryContext } from './CommitMasterTypes.js'
 
 const exists = async (target: string): Promise<boolean> => {
@@ -233,6 +238,77 @@ const blobIdForWorktreePath = async (
    }
 }
 
+const nulSeparatedPaths = (changes: readonly FileChange[]): Buffer =>
+   Buffer.from(`${changes.map((change) => change.path).join('\0')}\0`)
+
+const parseDetectedRenameStatus = (output: Buffer): FileChange[] => {
+   const fields = output.toString('utf8').split('\0')
+   const renames: FileChange[] = []
+   for (let index = 0; index < fields.length; index += 1) {
+      const status = fields[index]
+      if (!status) continue
+      if (status.startsWith('R')) {
+         const previousPath = fields[index + 1]
+         const path = fields[index + 2]
+         if (!previousPath || !path) {
+            throw new CommitMasterError('Git returned an incomplete rename-detection record.')
+         }
+         renames.push({ kind: 'renamed', path, previousPath })
+         index += 2
+      } else {
+         index += 1
+      }
+   }
+   return renames
+}
+
+const detectUnstagedRenames = async (
+   root: string,
+   deleted: readonly FileChange[],
+   created: readonly FileChange[]
+): Promise<FileChange[]> => {
+   const head = await runGit(['rev-parse', '--verify', 'HEAD'], {
+      cwd: root,
+      category: 'Rename detection',
+      acceptedExitCodes: [0, 128],
+   })
+   if (head.exitCode !== 0) return []
+
+   const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'commit-master-rename-index-'))
+   const temporaryIndex = path.join(temporaryDirectory, 'index')
+   const env = { GIT_INDEX_FILE: temporaryIndex }
+   try {
+      await runGit(['read-tree', 'HEAD'], {
+         cwd: root,
+         category: 'Rename detection',
+         env,
+      })
+      await runGit(['update-index', '--remove', '-z', '--stdin'], {
+         cwd: root,
+         category: 'Rename detection',
+         env,
+         input: nulSeparatedPaths(deleted),
+      })
+      await runGit(['update-index', '--add', '-z', '--stdin'], {
+         cwd: root,
+         category: 'Rename detection',
+         env,
+         input: nulSeparatedPaths(created),
+      })
+      const detected = await runGit(
+         ['diff-index', '--cached', '--name-status', '-z', '--find-renames=50%', 'HEAD'],
+         {
+            cwd: root,
+            category: 'Rename detection',
+            env,
+         }
+      )
+      return parseDetectedRenameStatus(detected.stdout)
+   } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true })
+   }
+}
+
 const resolveUnstagedRenames = async (
    root: string,
    changes: FileChange[]
@@ -241,22 +317,45 @@ const resolveUnstagedRenames = async (
    const created = changes.filter((change) => change.kind === 'new')
    if (deleted.length === 0 || created.length === 0) return changes
 
+   const detectedRenames = await detectUnstagedRenames(root, deleted, created)
+   const withDetectedRenames = mergeDetectedRenames(changes, detectedRenames)
+   const unpairedDeleted = withDetectedRenames.filter((change) => change.kind === 'deleted')
+   const unpairedCreated = withDetectedRenames.filter((change) => change.kind === 'new')
+   if (unpairedDeleted.length === 0 || unpairedCreated.length === 0) return withDetectedRenames
+
    const deletedBlobIds = new Map<string, string>()
    const createdBlobIds = new Map<string, string>()
    await Promise.all(
-      deleted.map(async (change) => {
+      unpairedDeleted.map(async (change) => {
          const oid = await blobIdForHeadPath(root, change.path)
          if (oid) deletedBlobIds.set(change.path, oid)
       })
    )
    await Promise.all(
-      created.map(async (change) => {
+      unpairedCreated.map(async (change) => {
          const oid = await blobIdForWorktreePath(root, change.path)
          if (oid) createdBlobIds.set(change.path, oid)
       })
    )
-   return mergeContentIdenticalRenames(changes, deletedBlobIds, createdBlobIds)
+   return mergeContentIdenticalRenames(withDetectedRenames, deletedBlobIds, createdBlobIds)
 }
+
+const identifyContentUnchangedRenames = async (
+   root: string,
+   changes: readonly FileChange[]
+): Promise<FileChange[]> =>
+   Promise.all(
+      changes.map(async (change) => {
+         if (change.kind !== 'renamed' || !change.previousPath) return change
+         const [previousBlobId, currentBlobId] = await Promise.all([
+            blobIdForHeadPath(root, change.previousPath),
+            blobIdForWorktreePath(root, change.path),
+         ])
+         return previousBlobId && previousBlobId === currentBlobId
+            ? { ...change, isContentUnchanged: true }
+            : change
+      })
+   )
 
 export const readChanges = async (repository: Pick<RepositoryContext, 'root'>): Promise<FileChange[]> => {
    const status = await runGit(
@@ -266,5 +365,6 @@ export const readChanges = async (repository: Pick<RepositoryContext, 'root'>): 
          category: 'Working-tree inspection',
       }
    )
-   return resolveUnstagedRenames(repository.root, parseWorkingTreeStatus(status.stdout))
+   const changes = await resolveUnstagedRenames(repository.root, parseWorkingTreeStatus(status.stdout))
+   return identifyContentUnchangedRenames(repository.root, changes)
 }
