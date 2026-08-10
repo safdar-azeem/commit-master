@@ -127,3 +127,34 @@ export const mergeContentIdenticalRenames = (
 
    return sortFileChanges([...others, ...unpairedDeleted, ...unpairedCreated, ...renames])
 }
+
+/** Merge Git-detected rename pairs into the delete and new entries that produced them. */
+export const mergeDetectedRenames = (
+   changes: readonly FileChange[],
+   detectedRenames: readonly FileChange[]
+): FileChange[] => {
+   const deletedByPath = new Map(
+      changes.filter((change) => change.kind === 'deleted').map((change) => [change.path, change])
+   )
+   const createdByPath = new Map(
+      changes.filter((change) => change.kind === 'new').map((change) => [change.path, change])
+   )
+   const pairedDeleted = new Set<FileChange>()
+   const pairedCreated = new Set<FileChange>()
+   const renames: FileChange[] = []
+
+   for (const detected of detectedRenames) {
+      if (detected.kind !== 'renamed' || !detected.previousPath) continue
+      const deleted = deletedByPath.get(detected.previousPath)
+      const created = createdByPath.get(detected.path)
+      if (!deleted || !created || pairedDeleted.has(deleted) || pairedCreated.has(created)) continue
+      pairedDeleted.add(deleted)
+      pairedCreated.add(created)
+      renames.push({ kind: 'renamed', path: created.path, previousPath: deleted.path })
+   }
+
+   return sortFileChanges([
+      ...changes.filter((change) => !pairedDeleted.has(change) && !pairedCreated.has(change)),
+      ...renames,
+   ])
+}
