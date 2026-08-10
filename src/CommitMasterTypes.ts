@@ -4,6 +4,8 @@ export interface FileChange {
    kind: ChangeKind
    path: string
    previousPath?: string
+   /** Present only for renames whose current content is identical to the previous HEAD blob. */
+   isContentUnchanged?: boolean
 }
 
 export interface RepositoryContext {
