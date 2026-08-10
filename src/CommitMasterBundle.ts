@@ -53,6 +53,12 @@ interface BundleOptions {
    maxBundleBytes?: number
 }
 
+export interface BundleRepository {
+   root: string
+   name: string
+   changes: readonly FileChange[]
+}
+
 type FileContentResult =
    | { kind: 'content'; content: string; language: string }
    | { kind: 'placeholder'; content: string }
@@ -194,30 +200,84 @@ export const createMarkdownBundle = async (
    const ending = '\n\n------------------------------'
    let bundleBytes = Buffer.byteLength(repositoryHeader) + Buffer.byteLength(ending)
    const sections: string[] = []
-
    for (const change of changes) {
-      throwIfAborted(options.signal)
-      const absolutePath = resolveAbsoluteChangedPath(repositoryRoot, change.path)
-      const result = await readWorkingTreeContent(
-         absolutePath,
-         change,
-         maxFileBytes,
-         options.signal
-      )
-      const content = result.content
-      const language = result.kind === 'content' ? result.language : 'text'
-      const fence = createSafeFence(content)
-      const contentWithNewline = content.endsWith('\n') ? content : `${content}\n`
-      const headingPath = escapeMarkdownHeadingPath(absolutePath)
-      const section = `### ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
-      bundleBytes += Buffer.byteLength('\n\n') + Buffer.byteLength(section)
-      if (bundleBytes > maxBundleBytes) {
-         throw new CommitMasterError(
-            'Markdown bundle exceeds the 10 MiB safety limit. Reduce the number or size of changed files and try again.'
-         )
-      }
+      const section = await createBundleSection(repositoryRoot, change, maxFileBytes, options.signal)
+      bundleBytes = addBundleBytes(bundleBytes, '\n\n', section, maxBundleBytes)
       sections.push(section)
    }
 
    return `${repositoryHeader}\n\n${sections.join('\n\n')}${ending}`
+}
+
+const addBundleBytes = (
+   currentBytes: number,
+   separator: string,
+   content: string,
+   maxBundleBytes: number
+): number => {
+   const total = currentBytes + Buffer.byteLength(separator) + Buffer.byteLength(content)
+   if (total > maxBundleBytes) {
+      throw new CommitMasterError(
+         'Markdown bundle exceeds the 10 MiB safety limit. Reduce the number or size of changed files and try again.'
+      )
+   }
+   return total
+}
+
+const createBundleSection = async (
+   repositoryRoot: string,
+   change: FileChange,
+   maxFileBytes: number,
+   signal?: AbortSignal
+): Promise<string> => {
+   throwIfAborted(signal)
+   const absolutePath = resolveAbsoluteChangedPath(repositoryRoot, change.path)
+   const result = await readWorkingTreeContent(absolutePath, change, maxFileBytes, signal)
+   const content = result.content
+   const language = result.kind === 'content' ? result.language : 'text'
+   const fence = createSafeFence(content)
+   const contentWithNewline = content.endsWith('\n') ? content : `${content}\n`
+   const headingPath = escapeMarkdownHeadingPath(absolutePath)
+   return `### ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
+}
+
+export const createCombinedMarkdownBundle = async (
+   repositories: readonly BundleRepository[],
+   options: BundleOptions = {}
+): Promise<string> => {
+   const maxFileBytes = validateLimit(
+      options.maxFileBytes ?? MAX_BUNDLE_FILE_BYTES,
+      'Maximum file size',
+      MAX_BUNDLE_FILE_BYTES
+   )
+   const maxBundleBytes = validateLimit(
+      options.maxBundleBytes ?? MAX_BUNDLE_BYTES,
+      'Maximum bundle size',
+      MAX_BUNDLE_BYTES
+   )
+   const fileCount = repositories.reduce((total, repository) => total + repository.changes.length, 0)
+   const header = `# Repository Bundle\n\nRepositories: ${repositories.length}\nFiles: ${fileCount}`
+   const ending = '\n\n------------------------------'
+   let bundleBytes = Buffer.byteLength(header) + Buffer.byteLength(ending)
+   const repositorySections: string[] = []
+
+   for (const repository of repositories) {
+      throwIfAborted(options.signal)
+      const heading = `## ${escapeMarkdownHeadingPath(repository.name)}\n\nPath: ${escapeDisplayedPath(repository.root)}\nChanged files: ${repository.changes.length}`
+      bundleBytes = addBundleBytes(bundleBytes, '\n\n', heading, maxBundleBytes)
+      const fileSections: string[] = []
+      for (const change of repository.changes) {
+         const fileSection = await createBundleSection(
+            repository.root,
+            change,
+            maxFileBytes,
+            options.signal
+         )
+         bundleBytes = addBundleBytes(bundleBytes, '\n\n', fileSection, maxBundleBytes)
+         fileSections.push(fileSection)
+      }
+      repositorySections.push(`${heading}\n\n${fileSections.join('\n\n')}`)
+   }
+
+   return `${header}\n\n${repositorySections.join('\n\n')}${ending}`
 }
