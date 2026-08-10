@@ -147,10 +147,16 @@ const readWorkingTreeContent = async (
    maxFileBytes: number,
    signal?: AbortSignal
 ): Promise<FileContentResult> => {
-   if (isSensitivePath(change.path)) {
+   if (
+      isSensitivePath(change.path) ||
+      (change.kind === 'renamed' && !!change.previousPath && isSensitivePath(change.previousPath))
+   ) {
       return { kind: 'placeholder', content: '[SENSITIVE FILE OMITTED]' }
    }
    if (change.kind === 'deleted') return { kind: 'placeholder', content: '[FILE DELETED]' }
+   if (change.kind === 'renamed' && change.isContentUnchanged) {
+      return { kind: 'placeholder', content: '[NO CHANGES IN FILE - RENAMED ONLY]' }
+   }
 
    try {
       throwIfAborted(signal)
@@ -237,8 +243,14 @@ const createBundleSection = async (
    const language = result.kind === 'content' ? result.language : 'text'
    const fence = createSafeFence(content)
    const contentWithNewline = content.endsWith('\n') ? content : `${content}\n`
-   const headingPath = escapeMarkdownHeadingPath(absolutePath)
-   return `### ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
+   const headingPath = createChangeHeadingPath(change)
+   return `### [${change.kind.toUpperCase()}] ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
+}
+
+const createChangeHeadingPath = (change: FileChange): string => {
+   const currentPath = escapeMarkdownHeadingPath(change.path)
+   if (change.kind !== 'renamed' || !change.previousPath) return currentPath
+   return `${escapeMarkdownHeadingPath(change.previousPath)} -> ${currentPath}`
 }
 
 export const createCombinedMarkdownBundle = async (
