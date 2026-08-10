@@ -1,5 +1,6 @@
 import { copyToClipboard } from './CommitMasterClipboard.js'
-import { createMarkdownBundle } from './CommitMasterBundle.js'
+import path from 'node:path'
+import { createCombinedMarkdownBundle, createMarkdownBundle } from './CommitMasterBundle.js'
 import {
    collectEligibleChanges,
    escapeDisplayedPath,
@@ -55,4 +56,46 @@ export const runClipboardCommand = async (
 
    await writeClipboard(content, signal)
    console.log(clipboardSuccessMessage(command, changes.length))
+}
+
+export const runWorkspaceBundleCommand = async (
+   repositoryRoots: readonly string[],
+   signal?: AbortSignal,
+   writeClipboard: ClipboardWriter = copyToClipboard
+): Promise<void> => {
+   throwIfCopyCancelled(signal)
+   const repositories: Array<{
+      root: string
+      name: string
+      changes: Awaited<ReturnType<typeof collectEligibleChanges>>
+   }> = []
+   for (const root of repositoryRoots) {
+      throwIfCopyCancelled(signal)
+      const changes = await collectEligibleChanges(root)
+      repositories.push({ root, name: path.basename(root) || root, changes })
+   }
+   throwIfCopyCancelled(signal)
+
+   const changedRepositories = repositories.filter((repository) => repository.changes.length > 0)
+   for (const repository of repositories) {
+      console.log(
+         `${repository.name}: ${repository.changes.length === 0 ? 'clean' : `${repository.changes.length} changed files`}`
+      )
+   }
+   if (changedRepositories.length === 0) {
+      console.log('Nothing to copy. All selected repositories are clean.')
+      return
+   }
+
+   const content = await createCombinedMarkdownBundle(changedRepositories, { signal })
+   await writeClipboard(content, signal)
+   const fileCount = changedRepositories.reduce(
+      (total, repository) => total + repository.changes.length,
+      0
+   )
+   console.log(
+      `\n${fileCount} changed files from ${changedRepositories.length} ${
+         changedRepositories.length === 1 ? 'repository' : 'repositories'
+      } bundled and copied.`
+   )
 }
