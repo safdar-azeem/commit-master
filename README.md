@@ -137,7 +137,7 @@ Example clipboard content:
 ````markdown
 Repository: /completeProjectPath
 
-### /completeProjectPath/package.json
+### [MODIFIED] package.json
 
 ```json
 {
@@ -145,7 +145,7 @@ Repository: /completeProjectPath
 }
 ```
 
-### /completeProjectPath/src/index.ts
+### [MODIFIED] src/index.ts
 
 ```ts
 export const ready = true
@@ -189,7 +189,7 @@ Files: 7
 Path: /path/to/workspace/web-client
 Changed files: 5
 
-### /path/to/workspace/web-client/src/App.vue
+### [MODIFIED] src/App.vue
 
 ```vue
 <!-- changed content -->
@@ -204,6 +204,8 @@ gitbundle --all /path/to/workspace
 ```
 
 Discovery is bounded to three directory levels and skips `.git`, dependency, build, cache, and other heavy generated directories. Once it finds a repository it does not scan through it. A clean repository is reported and excluded from the bundle; if every selected repository is clean, the existing clipboard content is left untouched.
+
+Each file heading identifies its change type and uses a path relative to that repository. Renames include both paths; a rename with unchanged content uses `[NO CHANGES IN FILE - RENAMED ONLY]` instead of repeating the complete file.
 
 ### Save and Reuse Workspaces
 
