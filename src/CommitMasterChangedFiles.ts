@@ -20,7 +20,6 @@ const IGNORED_FILE_NAMES = new Set([
 
 const IGNORED_FILE_SUFFIXES = [
    '.log',
-   '.sql',
    '.onnx',
    '.tag',
    '.pdf',
@@ -83,8 +82,6 @@ const IGNORED_DIRECTORY_PATHS = [
    'gen',
    'temp',
    'ffmpeg',
-   'migrations',
-   'sql',
    'dist',
    '.xcode',
    'vendor/bundle',
