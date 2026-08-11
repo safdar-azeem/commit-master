@@ -234,8 +234,8 @@ Both clipboard commands use one shared ignore policy. Git's own ignore rules are
 
 - Exact names: `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `generated.ts`, `mongoose.gen.ts`, `resolvers.generated.ts`, `typeDefs.generated.ts`, `types.generated.ts`, `tsconfig.tsbuildinfo`, `tsconfig.node.tsbuildinfo`, and `.DS_Store`.
 - Generated patterns: `*.generated.ts` and `vite.config.ts.timestamp-*`.
-- Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `migrations`, `sql`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
-- Extensions: `.log`, `.sql`, `.onnx`, `.TAG`, `.pdf`, `.docx`, `.csv`, common image/audio/video formats, archives, database files, WebAssembly, and native binaries.
+- Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
+- Extensions: `.log`, `.onnx`, `.TAG`, `.pdf`, `.docx`, `.csv`, common image/audio/video formats, archives, database files, WebAssembly, and native binaries.
 
 Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included. The centralized eligibility rules apply identically to `gitpaths` and `gitbundle`.
 
