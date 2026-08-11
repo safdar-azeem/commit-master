@@ -505,8 +505,6 @@ describe('clipboard commands', () => {
          'gen',
          'temp',
          'ffmpeg',
-         'migrations',
-         'sql',
          'dist',
          '.xcode',
          'vendor/bundle',
@@ -527,12 +525,14 @@ describe('clipboard commands', () => {
          )
       }
 
+      assert.equal(isDefaultIgnoredPath('packages/web/migrations/001_init.sql'), false)
+      assert.equal(isDefaultIgnoredPath('packages/web/sql/queries/users.sql'), false)
       assert.equal(isDefaultIgnoredPath('packages/web/package.json'), false)
    })
 
    it('preserves every required ignored file extension case-insensitively', () => {
       const extensions = [
-         '.log', '.sql', '.onnx', '.TAG', '.pdf', '.docx', '.csv', '.jpg', '.jpeg',
+         '.log', '.onnx', '.TAG', '.pdf', '.docx', '.csv', '.jpg', '.jpeg',
          '.png', '.gif', '.webp', '.svg', '.avif', '.bmp', '.ico', '.tif', '.tiff',
          '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpeg',
          '.mpg', '.wmv', '.flv', '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg',
@@ -543,6 +543,9 @@ describe('clipboard commands', () => {
       for (const extension of extensions) {
          assert.equal(isDefaultIgnoredPath(`src/FILE${extension}`), true, extension)
       }
+
+      assert.equal(isDefaultIgnoredPath('src/schema.SQL'), false)
+      assert.equal(isDefaultIgnoredPath('src/schema.sql'), false)
    })
 
    it('collects a stable staged, unstaged, renamed, deleted, and untracked union', async () => {
