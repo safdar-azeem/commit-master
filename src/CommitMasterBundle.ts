@@ -5,10 +5,16 @@ import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErro
 import {
    escapeDisplayedPath,
    escapeMarkdownHeadingPath,
+   detectExtractableDocumentType,
    isOmittedBinaryContentPath,
    isSensitivePath,
    resolveAbsoluteChangedPath,
 } from './CommitMasterChangedFiles.js'
+import {
+   MAX_DOCUMENT_SOURCE_BYTES,
+   documentSourceTooLargePlaceholder,
+   extractDocumentContent,
+} from './CommitMasterDocumentContent.js'
 import type { FileChange } from './CommitMasterTypes.js'
 
 export const MAX_BUNDLE_FILE_BYTES = 1024 * 1024
@@ -133,16 +139,37 @@ const readBoundedFile = async (
       }
       if (metadata.size > maxFileBytes) return '[FILE TOO LARGE]'
 
-      const contents = Buffer.allocUnsafe(maxFileBytes + 1)
-      let offset = 0
-      while (offset < contents.length) {
-         throwIfAborted(signal)
-         const { bytesRead } = await handle.read(contents, offset, contents.length - offset, null)
-         if (bytesRead === 0) break
-         offset += bytesRead
+      const sameOpenedFile = (latest: { isFile(): boolean; dev: number; ino: number }): boolean =>
+         latest.isFile() && latest.dev === metadata.dev && latest.ino === metadata.ino
+
+      const readFromStart = async (knownSize: number): Promise<Buffer | '[FILE TOO LARGE]'> => {
+         const contents = Buffer.allocUnsafe(Math.min(knownSize, maxFileBytes) + 1)
+         let offset = 0
+         while (offset < contents.length) {
+            throwIfAborted(signal)
+            const { bytesRead } = await handle.read(contents, offset, contents.length - offset, offset)
+            if (bytesRead === 0) break
+            offset += bytesRead
+         }
+         if (offset > maxFileBytes) return '[FILE TOO LARGE]'
+         return contents.subarray(0, offset)
       }
-      if (offset > maxFileBytes) return '[FILE TOO LARGE]'
-      return contents.subarray(0, offset)
+
+      let contents = await readFromStart(metadata.size)
+      if (contents === '[FILE TOO LARGE]') return contents
+
+      const latest = await handle.stat()
+      if (!sameOpenedFile(latest)) return '[FILE UNREADABLE]'
+      if (latest.size > maxFileBytes) return '[FILE TOO LARGE]'
+      if (latest.size > contents.length) {
+         contents = await readFromStart(latest.size)
+         if (contents === '[FILE TOO LARGE]') return contents
+         const again = await handle.stat()
+         if (!sameOpenedFile(again)) return '[FILE UNREADABLE]'
+         if (again.size > maxFileBytes) return '[FILE TOO LARGE]'
+         if (again.size > contents.length) return '[FILE UNREADABLE]'
+      }
+      return contents
    } finally {
       await handle.close()
    }
@@ -172,6 +199,15 @@ const readWorkingTreeContent = async (
          return { kind: 'content', content: await readlink(absolutePath), language: 'text' }
       }
       if (!metadata.isFile()) return { kind: 'placeholder', content: '[FILE UNREADABLE]' }
+      const documentType = detectExtractableDocumentType(change.path)
+      if (documentType) {
+         const contents = await readBoundedFile(absolutePath, MAX_DOCUMENT_SOURCE_BYTES, signal)
+         if (contents === '[FILE UNREADABLE]') return { kind: 'placeholder', content: contents }
+         if (contents === '[FILE TOO LARGE]') {
+            return { kind: 'placeholder', content: documentSourceTooLargePlaceholder(documentType) }
+         }
+         return extractDocumentContent(contents, documentType, { signal })
+      }
       if (isOmittedBinaryContentPath(change.path)) {
          return { kind: 'placeholder', content: omittedBinaryContentPlaceholder(change.path) }
       }
