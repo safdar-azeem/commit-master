@@ -157,19 +157,30 @@ Repository: /completeProjectPath
 [Binary file: hero.png - content omitted]
 ```
 
+### [MODIFIED] docs/product-spec.docx
+
+```text
+[Extracted DOCX content]
+
+Product Specification
+```
+
 ------------------------------
 ````
 
-The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. SVG files are included as readable source with an `svg` fence. Binary images, audio, video, documents, models, archives, databases, WebAssembly, native binaries, and similar non-text files stay visible by path, with their payloads replaced by a short omission placeholder. It uses these explicit placeholders:
+The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. SVG files are included as readable source with an `svg` fence. Changed Word documents, PDFs, and PowerPoint decks have their readable text extracted for review: DOCX as document text, PDF as page text, and PPTX as slide text. This is text extraction, not visual rendering or OCR. Binary images, audio, video, models, archives, databases, WebAssembly, native binaries, and similar non-text files stay visible by path, with their payloads replaced by a short omission placeholder. It uses these explicit placeholders:
 
 - `[SENSITIVE FILE OMITTED]` for environment files, credentials, private keys, and other protected files
 - `[FILE DELETED]` for deleted files
 - `[FILE NOT FOUND]` when a changed file disappears before it can be read
 - `[FILE UNREADABLE]` for inaccessible or replaced files
 - `[FILE TOO LARGE]` when one textual file exceeds 1 MiB
-- `[Binary file: filename.png - content omitted]` for binary images, media, documents, and other non-text content
+- `[Binary file: filename.png - content omitted]` for binary images, media, archives, databases, models, native binaries, and other non-text content that is not extracted
+- `[Extracted DOCX content]`, `[Extracted PDF content: N pages]`, and `[Extracted PPTX content: N slides]` as headers for extracted document text
+- `[PDF contains no extractable text - OCR not enabled]` for scanned or image-only PDFs
+- `[DOCX content could not be extracted]`, `[PDF content could not be extracted]`, and `[PPTX content could not be extracted]` when parsing fails safely
 
-Commit Master never silently truncates file content. Individual textual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. Binary assets represented by an omission placeholder are not subject to the per-file textual size limit, because their payloads are never read into the bundle. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository.
+Commit Master never silently truncates file content. Individual textual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. Binary assets represented by an omission placeholder are not subject to the per-file textual size limit, because their payloads are never read into the bundle. DOCX, PDF, and PPTX source files may exceed 1 MiB; gitbundle reads those files with the same symlink and replacement protections as other bundle files, then extracts reviewable text from the acquired bytes instead of rejecting them as too large. Source documents are capped at 32 MiB, extracted text is capped at 1 MiB, and the complete bundle remains limited to 10 MiB. If extracted text is truncated, the bundle includes `[Extracted content truncated]`. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository. Document images, attachments, and media are not embedded.
 
 After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count of files represented in the bundle, including omitted-content assets.
 
@@ -243,13 +254,14 @@ Clipboard commands share generated-file, lockfile, and directory exclusions. Git
 - Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
 - Noise extensions: `.log`, `.TAG`, and `.csv`.
 
-`gitpaths` also omits common image, audio, video, SVG, PDF, DOCX, ONNX, WASM, archive, database, and native-binary files, because it copies filesystem paths rather than a reviewable bundle.
+`gitpaths` also omits common image, audio, video, SVG, PDF, DOCX, PPTX, ONNX, WASM, archive, database, and native-binary files, because it copies filesystem paths rather than a reviewable bundle.
 
 `gitbundle` keeps those meaningful asset and document files visible:
 
 - SVG is included as readable source with an `svg` code fence.
-- Binary images, audio, video, PDF, DOCX, ONNX, WASM, archives, databases, native binaries, and other omitted-content files appear by path with `[Binary file: filename.ext - content omitted]`.
-- Their presence counts toward the bundled file count. Binary payloads are never read into the bundle.
+- DOCX, PDF, and PPTX files include extracted reviewable text (document, page, and slide text). DOCX headers, body, footnotes/endnotes, and footers are included as explicit sections. PPTX speaker notes stay on their slides. Scanned PDFs are not OCR'd, and document images or media are not embedded.
+- Binary images, audio, video, ONNX, WASM, archives, databases, native binaries, and other omitted-content files appear by path with `[Binary file: filename.ext - content omitted]`.
+- Their presence counts toward the bundled file count. Binary payloads that are not extracted are never read into the bundle.
 
 Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included.
 
