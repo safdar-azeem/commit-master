@@ -18,19 +18,16 @@ const IGNORED_FILE_NAMES = new Set([
    '.ds_store',
 ])
 
-const IGNORED_FILE_SUFFIXES = [
-   '.log',
-   '.onnx',
-   '.tag',
+const IGNORED_FILE_SUFFIXES = ['.log', '.tag', '.csv'] as const
+
+const OMITTED_BINARY_CONTENT_SUFFIXES = [
    '.pdf',
    '.docx',
-   '.csv',
    '.jpg',
    '.jpeg',
    '.png',
    '.gif',
    '.webp',
-   '.svg',
    '.avif',
    '.bmp',
    '.ico',
@@ -58,6 +55,7 @@ const IGNORED_FILE_SUFFIXES = [
    '.wma',
    '.aiff',
    '.aif',
+   '.onnx',
    '.zip',
    '.tar',
    '.gz',
@@ -75,6 +73,8 @@ const IGNORED_FILE_SUFFIXES = [
    '.dylib',
    '.so',
 ] as const
+
+const TEXTUAL_ASSET_SUFFIXES = ['.svg'] as const
 
 const IGNORED_DIRECTORY_PATHS = [
    '_locales',
@@ -115,21 +115,47 @@ const normalizeGitPath = (filePath: string): string =>
 const comparePaths = (left: FileChange, right: FileChange): number =>
    left.path < right.path ? -1 : left.path > right.path ? 1 : 0
 
-export const isDefaultIgnoredPath = (filePath: string): boolean => {
-   const normalized = normalizeGitPath(filePath)
-   const lowerPath = normalized.toLowerCase()
-   const lowerName = lowerPath.split('/').at(-1) ?? lowerPath
+const lowerFileName = (filePath: string): string => {
+   const lowerPath = normalizeGitPath(filePath).toLowerCase()
+   return lowerPath.split('/').at(-1) ?? lowerPath
+}
 
-   if (IGNORED_FILE_NAMES.has(lowerName)) return true
-   if (lowerName.endsWith('.generated.ts')) return true
-   if (lowerName.startsWith('vite.config.ts.timestamp-')) return true
-   if (IGNORED_FILE_SUFFIXES.some((suffix) => lowerName.endsWith(suffix))) return true
+const hasAnySuffix = (lowerName: string, suffixes: readonly string[]): boolean =>
+   suffixes.some((suffix) => lowerName.endsWith(suffix))
 
-   const surrounded = `/${lowerPath}/`
+const isIgnoredDirectoryPath = (filePath: string): boolean => {
+   const surrounded = `/${normalizeGitPath(filePath).toLowerCase()}/`
    return IGNORED_DIRECTORY_PATHS.some((directory) =>
       surrounded.includes(`/${directory}/`)
    )
 }
+
+const isGeneratedOrNamedIgnoredPath = (lowerName: string): boolean => {
+   if (IGNORED_FILE_NAMES.has(lowerName)) return true
+   if (lowerName.endsWith('.generated.ts')) return true
+   return lowerName.startsWith('vite.config.ts.timestamp-')
+}
+
+const isPathsOmittedAssetPath = (filePath: string): boolean => {
+   const lowerName = lowerFileName(filePath)
+   return (
+      hasAnySuffix(lowerName, OMITTED_BINARY_CONTENT_SUFFIXES) ||
+      hasAnySuffix(lowerName, TEXTUAL_ASSET_SUFFIXES)
+   )
+}
+
+export const isOmittedBinaryContentPath = (filePath: string): boolean =>
+   hasAnySuffix(lowerFileName(filePath), OMITTED_BINARY_CONTENT_SUFFIXES)
+
+export const isBundleExcludedPath = (filePath: string): boolean => {
+   const lowerName = lowerFileName(filePath)
+   if (isGeneratedOrNamedIgnoredPath(lowerName)) return true
+   if (hasAnySuffix(lowerName, IGNORED_FILE_SUFFIXES)) return true
+   return isIgnoredDirectoryPath(filePath)
+}
+
+export const isDefaultIgnoredPath = (filePath: string): boolean =>
+   isBundleExcludedPath(filePath) || isPathsOmittedAssetPath(filePath)
 
 export const isSensitivePath = (filePath: string): boolean => {
    const lowerName = normalizeGitPath(filePath).toLowerCase().split('/').at(-1) ?? ''
@@ -156,18 +182,27 @@ export const escapeDisplayedPath = (filePath: string): string =>
 export const escapeMarkdownHeadingPath = (filePath: string): string =>
    escapeDisplayedPath(filePath).replace(/([`*_{}\[\]<>#!|])/g, '\\$1')
 
-export const filterEligibleChanges = (changes: readonly FileChange[]): FileChange[] => {
+export type EligibleChangeMode = 'paths' | 'bundle'
+
+export const filterEligibleChanges = (
+   changes: readonly FileChange[],
+   mode: EligibleChangeMode = 'paths'
+): FileChange[] => {
+   const shouldSkip = mode === 'bundle' ? isBundleExcludedPath : isDefaultIgnoredPath
    const byCurrentPath = new Map<string, FileChange>()
    for (const change of changes) {
-      if (isDefaultIgnoredPath(change.path)) continue
+      if (shouldSkip(change.path)) continue
       const existing = byCurrentPath.get(change.path)
       if (!existing || existing.kind === 'deleted') byCurrentPath.set(change.path, change)
    }
    return [...byCurrentPath.values()].sort(comparePaths)
 }
 
-export const collectEligibleChanges = async (repositoryRoot: string): Promise<FileChange[]> =>
-   filterEligibleChanges(await readChanges({ root: repositoryRoot }))
+export const collectEligibleChanges = async (
+   repositoryRoot: string,
+   mode: EligibleChangeMode = 'paths'
+): Promise<FileChange[]> =>
+   filterEligibleChanges(await readChanges({ root: repositoryRoot }), mode)
 
 export const resolveAbsoluteChangedPath = (
    repositoryRoot: string,
