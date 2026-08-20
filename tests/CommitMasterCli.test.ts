@@ -74,6 +74,7 @@ import {
    createMinimalDocx,
    createMinimalPdf,
    createMinimalPptx,
+   createZipArchive,
 } from './CommitMasterDocumentFixtures.js'
 
 const gitspanBinary = fileURLToPath(
@@ -866,6 +867,19 @@ describe('clipboard commands', () => {
                footer: 'Copyright Acme',
                footnotes: ['Primary endpoint analysis excludes protocol deviations.'],
                endnotes: ['See protocol appendix B for exclusion criteria.'],
+               bodyBlocks: [
+                  { type: 'paragraph', text: 'Product Specification' },
+                  { type: 'paragraph', text: 'Users authenticate using a session token.' },
+                  {
+                     type: 'paragraph',
+                     text: 'NS, not significant (P ≥ 0.05; t test, as stated in the figure).',
+                  },
+                  { type: 'image', fileName: 'figure6.png' },
+                  {
+                     type: 'paragraph',
+                     text: 'Figure 6. Thirty-day healing outcomes with Nr-CWS and a silver-based dressing',
+                  },
+               ],
             }
          )
       )
@@ -881,8 +895,13 @@ describe('clipboard commands', () => {
       await writeFile(
          join(repository, 'talks/product-roadmap.pptx'),
          createMinimalPptx([
-            { title: '2027 Product Roadmap', body: 'Platform modernization', notes: 'Keep this confidential.' },
-            { title: 'Goals', body: 'Reduce infrastructure cost' },
+            {
+               title: '2027 Product Roadmap',
+               body: 'Platform modernization',
+               notes: 'Keep this confidential.',
+               imageFileName: 'roadmap.png',
+            },
+            { title: 'Goals', body: 'Reduce infrastructure cost', chart: true },
          ])
       )
       await writeFile(
@@ -927,6 +946,11 @@ describe('clipboard commands', () => {
       assert.match(bundle, /1\. Primary endpoint analysis excludes protocol deviations\./)
       assert.match(bundle, /Study limitations are documented separately\./)
       assert.match(bundle, /2\. See protocol appendix B for exclusion criteria\./)
+      assert.match(
+         bundle,
+         /NS, not significant \(P ≥ 0\.05; t test, as stated in the figure\)\.\n\n\[Embedded image omitted: figure6\.png\]\n\nFigure 6\. Thirty-day healing outcomes with Nr-CWS and a silver-based dressing/
+      )
+      assert.doesNotMatch(bundle, /iVBORw0KGgo|word\/media|rIdImg|data:image/)
       assert.match(bundle, /### \[NEW\] docs\/case-word\.DOCX/)
       assert.match(bundle, /Case Insensitive Word/)
       assert.match(bundle, /### \[NEW\] reports\/security-review\.pdf/)
@@ -942,9 +966,11 @@ describe('clipboard commands', () => {
       assert.match(bundle, /--- Slide 1 ---/)
       assert.match(bundle, /2027 Product Roadmap/)
       assert.match(bundle, /Platform modernization/)
+      assert.match(bundle, /\[Embedded image omitted: roadmap\.png\]/)
       assert.match(bundle, /Speaker Notes:/)
       assert.match(bundle, /Keep this confidential\./)
       assert.match(bundle, /--- Slide 2 ---/)
+      assert.match(bundle, /\[Embedded chart omitted\]/)
       assert.match(bundle, /Reduce infrastructure cost/)
       assert.match(bundle, /### \[NEW\] talks\/case-deck\.PPTX/)
       assert.match(bundle, /Uppercase Deck/)
@@ -1273,6 +1299,394 @@ describe('clipboard commands', () => {
       assert.equal(pptxSpeakerNotes.kind, 'content')
       assert.match(pptxSpeakerNotes.content, /Speaker Notes:\n\nKeep this confidential\./)
       assert.doesNotMatch(pptxSpeakerNotes.content, /Document Notes:/)
+
+      const visualOrder = await extractDocumentContent(Buffer.from('docx'), 'docx', {
+         parseOffice: async () => ({
+            content: [
+               { type: 'paragraph', text: 'NS, not significant (P ≥ 0.05; t test, as stated in the figure).' },
+               {
+                  type: 'image',
+                  metadata: { attachmentName: 'word/media/figure6.png' },
+                  children: [{ type: 'image', metadata: { attachmentName: 'figure6.png' } }],
+               },
+               {
+                  type: 'paragraph',
+                  text: 'Figure 6. Thirty-day healing outcomes with Nr-CWS and a silver-based dressing',
+               },
+               { type: 'image' },
+               { type: 'image' },
+               { type: 'chart', metadata: { title: 'Healing outcomes', attachmentName: 'chart1.xml' } },
+               { type: 'embed', metadata: { name: 'graphicFrame' } },
+               {
+                  type: 'table',
+                  children: [
+                     {
+                        type: 'row',
+                        children: [
+                           {
+                              type: 'cell',
+                              children: [
+                                 { type: 'paragraph', text: 'Day 0' },
+                                 { type: 'image', metadata: { attachmentName: 'day0.png' } },
+                              ],
+                           },
+                           { type: 'cell', children: [{ type: 'paragraph', text: 'Day 15' }] },
+                        ],
+                     },
+                  ],
+               },
+            ],
+         }),
+      })
+      assert.equal(visualOrder.kind, 'content')
+      assert.match(
+         visualOrder.content,
+         /NS, not significant \(P ≥ 0\.05; t test, as stated in the figure\)\.\n\n\[Embedded image omitted: figure6\.png\]\n\nFigure 6\. Thirty-day healing outcomes with Nr-CWS and a silver-based dressing/
+      )
+      assert.equal((visualOrder.content.match(/\[Embedded image omitted: figure6\.png\]/g) ?? []).length, 1)
+      assert.match(
+         visualOrder.content,
+         /\[Embedded image omitted\]\n\n\[Embedded image omitted\]\n\n\[Embedded chart omitted: Healing outcomes\]\n\n\[Embedded visual content omitted\]/
+      )
+      assert.match(visualOrder.content, /Day 0 \[Embedded image omitted: day0\.png\] \| Day 15/)
+      assert.doesNotMatch(visualOrder.content, /word\/media|chart1\.xml|graphicFrame|rId|iVBORw0KGgo|data:image/)
+
+      const pptxVisuals = await extractDocumentContent(Buffer.from('pptx'), 'pptx', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'slide',
+                  children: [
+                     { type: 'paragraph', text: '2027 Product Roadmap' },
+                     { type: 'image', metadata: { attachmentName: 'roadmap.png' } },
+                     { type: 'paragraph', text: 'Platform modernization' },
+                  ],
+                  notes: [{ type: 'note', text: 'Discuss infrastructure migration.' }],
+               },
+               {
+                  type: 'slide',
+                  children: [
+                     { type: 'paragraph', text: 'Cost Reduction' },
+                     { type: 'chart' },
+                     { type: 'paragraph', text: 'Reduce infrastructure cost by 20%.' },
+                  ],
+               },
+            ],
+         }),
+      })
+      assert.equal(pptxVisuals.kind, 'content')
+      assert.match(
+         pptxVisuals.content,
+         /--- Slide 1 ---\n\n2027 Product Roadmap\n\n\[Embedded image omitted: roadmap\.png\]\n\nPlatform modernization\n\nSpeaker Notes:\n\nDiscuss infrastructure migration\./
+      )
+      assert.match(
+         pptxVisuals.content,
+         /--- Slide 2 ---\n\nCost Reduction\n\n\[Embedded chart omitted\]\n\nReduce infrastructure cost by 20%\./
+      )
+
+      const pdfVisual = await extractDocumentContent(Buffer.from('pdf'), 'pdf', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'page',
+                  children: [
+                     { type: 'paragraph', text: 'Clinical outcomes' },
+                     { type: 'image', metadata: { attachmentName: 'wound.png' } },
+                     { type: 'paragraph', text: 'Figure 1. Representative wound appearance.' },
+                  ],
+               },
+            ],
+         }),
+      })
+      assert.equal(pdfVisual.kind, 'content')
+      assert.match(
+         pdfVisual.content,
+         /Clinical outcomes\n\n\[Embedded image omitted: wound\.png\]\n\nFigure 1\. Representative wound appearance\./
+      )
+
+      const parsedVisualDocx = await extractDocumentContent(
+         createMinimalDocx([], {}, {
+            bodyBlocks: [
+               { type: 'paragraph', text: 'Before the figure' },
+               { type: 'image', fileName: 'figure6.png' },
+               { type: 'paragraph', text: 'Figure 6. Thirty-day healing outcomes' },
+               { type: 'image', fileName: 'figure7.png' },
+               { type: 'chart' },
+               {
+                  type: 'table',
+                  rows: [[{ text: 'Day 0', imageFileName: 'day0.png' }, { text: 'Day 15' }]],
+               },
+            ],
+         }),
+         'docx'
+      )
+      assert.equal(parsedVisualDocx.kind, 'content')
+      assert.match(
+         parsedVisualDocx.content,
+         /Before the figure\n\n\[Embedded image omitted: figure6\.png\]\n\nFigure 6\. Thirty-day healing outcomes\n\n\[Embedded image omitted: figure7\.png\]/
+      )
+      assert.match(parsedVisualDocx.content, /\[Embedded chart omitted\]/)
+      assert.match(parsedVisualDocx.content, /Day 0 \[Embedded image omitted: day0\.png\] \| Day 15/)
+      assert.doesNotMatch(parsedVisualDocx.content, /iVBORw0KGgo|word\/media|data:image|rIdImg/)
+
+      const parsedVisualPptx = await extractDocumentContent(
+         createMinimalPptx([
+            {
+               title: '2027 Product Roadmap',
+               body: 'Platform modernization',
+               notes: 'Discuss infrastructure migration.',
+               imageFileName: 'roadmap.png',
+            },
+            { title: 'Cost Reduction', body: 'Reduce infrastructure cost by 20%.', chart: true },
+         ]),
+         'pptx'
+      )
+      assert.equal(parsedVisualPptx.kind, 'content')
+      assert.match(parsedVisualPptx.content, /\[Embedded image omitted: roadmap\.png\]/)
+      assert.match(parsedVisualPptx.content, /Speaker Notes:\n\nDiscuss infrastructure migration\./)
+      assert.match(parsedVisualPptx.content, /\[Embedded chart omitted\]/)
+      assert.doesNotMatch(parsedVisualPptx.content, /iVBORw0KGgo|ppt\/media|data:image/)
+   })
+
+   it('merges missing DOCX visuals through a bounded ZIP fallback without duplicating parser nodes', async () => {
+      const headerAndBody = createMinimalDocx([], {}, {
+         header: 'Hospital letterhead',
+         headerImageFileName: 'logo.png',
+         bodyBlocks: [
+            { type: 'paragraph', text: 'Before the figure' },
+            { type: 'image', fileName: 'figure6.png' },
+            { type: 'paragraph', text: 'Figure 6. Thirty-day healing outcomes' },
+         ],
+      })
+      const headerPresentBodyMissing = await extractDocumentContent(headerAndBody, 'docx', {
+         parseOffice: async () => ({
+            content: [
+               { type: 'paragraph', text: 'Before the figure' },
+               { type: 'paragraph', text: 'Figure 6. Thirty-day healing outcomes' },
+            ],
+            auxiliary: {
+               headers: [{ type: 'image', metadata: { attachmentName: 'logo.png' } }],
+            },
+         }),
+      })
+      assert.equal(headerPresentBodyMissing.kind, 'content')
+      assert.match(headerPresentBodyMissing.content, /\[Embedded image omitted: logo\.png\]/)
+      assert.equal(
+         (headerPresentBodyMissing.content.match(/\[Embedded image omitted: logo\.png\]/g) ?? []).length,
+         1
+      )
+      assert.match(
+         headerPresentBodyMissing.content,
+         /Before the figure\n\n\[Embedded image omitted: figure6\.png\]\n\nFigure 6\. Thirty-day healing outcomes/
+      )
+      assert.equal(
+         (headerPresentBodyMissing.content.match(/\[Embedded image omitted: figure6\.png\]/g) ?? []).length,
+         1
+      )
+
+      const secondImageMissing = await extractDocumentContent(
+         createMinimalDocx([], {}, {
+            bodyBlocks: [
+               { type: 'paragraph', text: 'First' },
+               { type: 'image', fileName: 'one.png' },
+               { type: 'paragraph', text: 'Second' },
+               { type: 'image', fileName: 'two.png' },
+               { type: 'paragraph', text: 'Third' },
+            ],
+         }),
+         'docx',
+         {
+            parseOffice: async () => ({
+               content: [
+                  { type: 'paragraph', text: 'First' },
+                  { type: 'image', metadata: { attachmentName: 'one.png' } },
+                  { type: 'paragraph', text: 'Second' },
+                  { type: 'paragraph', text: 'Third' },
+               ],
+            }),
+         }
+      )
+      assert.equal(secondImageMissing.kind, 'content')
+      assert.match(
+         secondImageMissing.content,
+         /First\n\n\[Embedded image omitted: one\.png\]\n\nSecond\n\n\[Embedded image omitted: two\.png\]\n\nThird/
+      )
+      assert.equal((secondImageMissing.content.match(/\[Embedded image omitted: one\.png\]/g) ?? []).length, 1)
+      assert.equal((secondImageMissing.content.match(/\[Embedded image omitted: two\.png\]/g) ?? []).length, 1)
+
+      const chartMissing = await extractDocumentContent(
+         createMinimalDocx([], {}, {
+            bodyBlocks: [
+               { type: 'paragraph', text: 'Before' },
+               { type: 'image', fileName: 'wound.png' },
+               { type: 'chart' },
+               { type: 'paragraph', text: 'After' },
+            ],
+         }),
+         'docx',
+         {
+            parseOffice: async () => ({
+               content: [
+                  { type: 'paragraph', text: 'Before' },
+                  { type: 'image', metadata: { attachmentName: 'wound.png' } },
+                  { type: 'paragraph', text: 'After' },
+               ],
+            }),
+         }
+      )
+      assert.equal(chartMissing.kind, 'content')
+      assert.match(
+         chartMissing.content,
+         /Before\n\n\[Embedded image omitted: wound\.png\]\n\n\[Embedded chart omitted\]\n\nAfter/
+      )
+      assert.equal((chartMissing.content.match(/\[Embedded image omitted: wound\.png\]/g) ?? []).length, 1)
+      assert.equal((chartMissing.content.match(/\[Embedded chart omitted\]/g) ?? []).length, 1)
+
+      const inlineImage = await extractDocumentContent(
+         createMinimalDocx([], {}, {
+            bodyBlocks: [
+               {
+                  type: 'paragraph',
+                  text: 'Before',
+                  imageFileName: 'inline.png',
+                  after: 'After',
+               },
+            ],
+         }),
+         'docx'
+      )
+      assert.equal(inlineImage.kind, 'content')
+      assert.match(
+         inlineImage.content,
+         /Before\n\n\[Embedded image omitted: inline\.png\]\n\nAfter/
+      )
+      assert.doesNotMatch(inlineImage.content, /iVBORw0KGgo|word\/media|data:image/)
+
+      const equationBesideImage = createMinimalDocx([], {}, {
+         bodyBlocks: [
+            {
+               type: 'paragraph',
+               text: 'Before',
+               imageFileName: 'inline.png',
+               after: 'After',
+            },
+         ],
+      })
+      const preservedEquation = await extractDocumentContent(equationBesideImage, 'docx', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'paragraph',
+                  children: [
+                     { type: 'text', text: 'Before' },
+                     { type: 'equation', text: 'E = mc²' },
+                     { type: 'image', metadata: { attachmentName: 'inline.png' } },
+                     { type: 'text', text: 'After' },
+                  ],
+               },
+            ],
+         }),
+      })
+      assert.equal(preservedEquation.kind, 'content')
+      const equationContent = preservedEquation.content
+      const beforeAt = equationContent.indexOf('Before')
+      const formulaAt = equationContent.indexOf('E = mc²')
+      const imageAt = equationContent.indexOf('[Embedded image omitted: inline.png]')
+      const afterAt = equationContent.indexOf('After')
+      assert.ok(beforeAt !== -1 && formulaAt !== -1 && imageAt !== -1 && afterAt !== -1)
+      assert.ok(beforeAt < formulaAt && formulaAt < imageAt && imageAt < afterAt)
+      assert.equal((equationContent.match(/\[Embedded image omitted: inline\.png\]/g) ?? []).length, 1)
+      assert.equal((equationContent.match(/E = mc²/g) ?? []).length, 1)
+
+      const missingImageKeepsEquation = await extractDocumentContent(equationBesideImage, 'docx', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'paragraph',
+                  children: [
+                     { type: 'text', text: 'Before' },
+                     { type: 'code', text: 'E = mc²' },
+                     { type: 'text', text: 'After' },
+                  ],
+               },
+            ],
+         }),
+      })
+      assert.equal(missingImageKeepsEquation.kind, 'content')
+      const filledContent = missingImageKeepsEquation.content
+      assert.ok(filledContent.indexOf('Before') < filledContent.indexOf('E = mc²'))
+      assert.ok(filledContent.indexOf('E = mc²') < filledContent.indexOf('[Embedded image omitted: inline.png]'))
+      assert.ok(filledContent.indexOf('[Embedded image omitted: inline.png]') < filledContent.indexOf('After'))
+      assert.equal((filledContent.match(/\[Embedded image omitted: inline\.png\]/g) ?? []).length, 1)
+
+      const dataDescriptorDocx = await extractDocumentContent(
+         createMinimalDocx([], {}, {
+            dataDescriptors: true,
+            bodyBlocks: [
+               { type: 'paragraph', text: 'Before the figure' },
+               { type: 'image', fileName: 'figure6.png' },
+               { type: 'paragraph', text: 'Figure 6. Thirty-day healing outcomes' },
+            ],
+         }),
+         'docx'
+      )
+      assert.equal(dataDescriptorDocx.kind, 'content')
+      assert.match(
+         dataDescriptorDocx.content,
+         /Before the figure\n\n\[Embedded image omitted: figure6\.png\]\n\nFigure 6\. Thirty-day healing outcomes/
+      )
+
+      const compressedXml = 'a'.repeat(MAX_DOCUMENT_SOURCE_BYTES + 8 * 1024 * 1024)
+      const zipBomb = createZipArchive({
+         '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>
+`,
+         '_rels/.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>
+`,
+         'word/_rels/document.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>
+`,
+         'word/document.xml': compressedXml,
+      })
+      assert.ok(zipBomb.byteLength < 1024 * 1024)
+      const bombExtracted = await extractDocumentContent(zipBomb, 'docx', {
+         parseOffice: async () => ({
+            content: [{ type: 'paragraph', text: 'Safe body' }],
+         }),
+      })
+      assert.equal(bombExtracted.kind, 'content')
+      assert.match(bombExtracted.content, /Safe body/)
+      assert.doesNotMatch(bombExtracted.content, /aaaa/)
+      assert.ok(Buffer.byteLength(bombExtracted.content) < 64 * 1024)
+
+      const controller = new AbortController()
+      await assert.rejects(
+         extractDocumentContent(
+            createMinimalDocx([], {}, {
+               bodyBlocks: [
+                  { type: 'paragraph', text: 'Review body' },
+                  { type: 'image', fileName: 'figure6.png' },
+               ],
+            }),
+            'docx',
+            {
+               signal: controller.signal,
+               parseOffice: async () => {
+                  controller.abort()
+                  return { content: [{ type: 'paragraph', text: 'Review body' }] }
+               },
+            }
+         ),
+         (error: unknown) => error instanceof ClipboardInterruptedError
+      )
    })
 
    it('escapes control and Markdown-sensitive path characters only for display', () => {
