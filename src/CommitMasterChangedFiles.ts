@@ -21,8 +21,6 @@ const IGNORED_FILE_NAMES = new Set([
 const IGNORED_FILE_SUFFIXES = ['.log', '.tag', '.csv'] as const
 
 const OMITTED_BINARY_CONTENT_SUFFIXES = [
-   '.pdf',
-   '.docx',
    '.jpg',
    '.jpeg',
    '.png',
@@ -73,6 +71,8 @@ const OMITTED_BINARY_CONTENT_SUFFIXES = [
    '.dylib',
    '.so',
 ] as const
+
+const EXTRACTABLE_DOCUMENT_SUFFIXES = ['.docx', '.pdf', '.pptx'] as const
 
 const TEXTUAL_ASSET_SUFFIXES = ['.svg'] as const
 
@@ -140,9 +140,23 @@ const isPathsOmittedAssetPath = (filePath: string): boolean => {
    const lowerName = lowerFileName(filePath)
    return (
       hasAnySuffix(lowerName, OMITTED_BINARY_CONTENT_SUFFIXES) ||
-      hasAnySuffix(lowerName, TEXTUAL_ASSET_SUFFIXES)
+      hasAnySuffix(lowerName, TEXTUAL_ASSET_SUFFIXES) ||
+      hasAnySuffix(lowerName, EXTRACTABLE_DOCUMENT_SUFFIXES)
    )
 }
+
+export type ExtractableDocumentType = 'docx' | 'pdf' | 'pptx'
+
+export const detectExtractableDocumentType = (
+   filePath: string
+): ExtractableDocumentType | undefined => {
+   const lowerName = lowerFileName(filePath)
+   const suffix = EXTRACTABLE_DOCUMENT_SUFFIXES.find((item) => lowerName.endsWith(item))
+   return suffix === undefined ? undefined : (suffix.slice(1) as ExtractableDocumentType)
+}
+
+export const isExtractableDocumentPath = (filePath: string): boolean =>
+   detectExtractableDocumentType(filePath) !== undefined
 
 export const isOmittedBinaryContentPath = (filePath: string): boolean =>
    hasAnySuffix(lowerFileName(filePath), OMITTED_BINARY_CONTENT_SUFFIXES)
