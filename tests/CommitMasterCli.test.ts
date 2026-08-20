@@ -32,12 +32,15 @@ import {
    createSafeFence,
    detectFenceLanguage,
    fileReadPlaceholder,
+   omittedBinaryContentPlaceholder,
 } from '../dist/CommitMasterBundle.js'
 import {
    collectEligibleChanges,
    escapeDisplayedPath,
    escapeMarkdownHeadingPath,
+   isBundleExcludedPath,
    isDefaultIgnoredPath,
+   isOmittedBinaryContentPath,
    isSensitivePath,
    resolveAbsoluteChangedPath,
 } from '../dist/CommitMasterChangedFiles.js'
@@ -531,21 +534,46 @@ describe('clipboard commands', () => {
    })
 
    it('preserves every required ignored file extension case-insensitively', () => {
-      const extensions = [
-         '.log', '.onnx', '.TAG', '.pdf', '.docx', '.csv', '.jpg', '.jpeg',
-         '.png', '.gif', '.webp', '.svg', '.avif', '.bmp', '.ico', '.tif', '.tiff',
-         '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v', '.mpeg',
-         '.mpg', '.wmv', '.flv', '.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg',
-         '.opus', '.wma', '.aiff', '.aif', '.zip', '.tar', '.gz', '.tgz', '.bz2',
-         '.xz', '.7z', '.rar', '.db', '.sqlite', '.sqlite3', '.wasm', '.exe', '.dll',
-         '.dylib', '.so',
-      ]
-      for (const extension of extensions) {
+      const fullyIgnoredExtensions = ['.log', '.TAG', '.csv']
+      for (const extension of fullyIgnoredExtensions) {
          assert.equal(isDefaultIgnoredPath(`src/FILE${extension}`), true, extension)
+         assert.equal(isBundleExcludedPath(`src/FILE${extension}`), true, extension)
+         assert.equal(isOmittedBinaryContentPath(`src/FILE${extension}`), false, extension)
+      }
+
+      const omittedBinaryExtensions = [
+         '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp',
+         '.ico', '.tif', '.tiff', '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv',
+         '.webm', '.m4v', '.mpeg', '.mpg', '.wmv', '.flv', '.mp3', '.wav', '.m4a',
+         '.aac', '.flac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.onnx', '.zip',
+         '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar', '.db', '.sqlite',
+         '.sqlite3', '.wasm', '.exe', '.dll', '.dylib', '.so',
+      ]
+      for (const extension of omittedBinaryExtensions) {
+         assert.equal(isDefaultIgnoredPath(`src/FILE${extension}`), true, extension)
+         assert.equal(isBundleExcludedPath(`src/FILE${extension}`), false, extension)
+         assert.equal(isOmittedBinaryContentPath(`src/FILE${extension}`), true, extension)
+      }
+
+      for (const svgPath of ['src/FILE.svg', 'src/FILE.SVG', 'public/logo.Svg']) {
+         assert.equal(isDefaultIgnoredPath(svgPath), true, svgPath)
+         assert.equal(isBundleExcludedPath(svgPath), false, svgPath)
+         assert.equal(isOmittedBinaryContentPath(svgPath), false, svgPath)
       }
 
       assert.equal(isDefaultIgnoredPath('src/schema.SQL'), false)
       assert.equal(isDefaultIgnoredPath('src/schema.sql'), false)
+      assert.equal(isBundleExcludedPath('node_modules/nested/hero.png'), true)
+      assert.equal(isBundleExcludedPath('dist/assets/logo.svg'), true)
+      assert.equal(isBundleExcludedPath('cache/model.onnx'), true)
+      assert.equal(
+         omittedBinaryContentPlaceholder('public/hero\n.png'),
+         '[Binary file: hero\\n.png - content omitted]'
+      )
+      assert.equal(
+         omittedBinaryContentPlaceholder('docs/spec\t.pdf'),
+         '[Binary file: spec\\t.pdf - content omitted]'
+      )
    })
 
    it('collects a stable staged, unstaged, renamed, deleted, and untracked union', async () => {
@@ -658,50 +686,201 @@ describe('clipboard commands', () => {
       assert.ok(bundle.startsWith(`Repository: ${repository}\n\n`))
       assert.match(bundle, /```text\n\[FILE DELETED\]\n```/)
       assert.match(bundle, /````markdown\nExample: ```ts/)
-      assert.match(bundle, /```text\n\[BINARY FILE OMITTED\]\n```/)
+      assert.match(bundle, /```text\n\[Binary file: unknown\.bin - content omitted\]\n```/)
       assert.match(bundle, /```ts\nexport type Config = string/)
       assert.ok(bundle.endsWith('------------------------------'))
       assert.equal(detectFenceLanguage('env.d.ts'), 'ts')
+      assert.equal(detectFenceLanguage('logo.svg'), 'svg')
+      assert.equal(detectFenceLanguage('LOGO.SVG'), 'svg')
       assert.equal(detectFenceLanguage('file.unknown'), 'text')
       assert.equal(createSafeFence('contains ``` here'), '````')
       assert.equal(createSafeFence('contains `````````` here').length, 11)
+   })
+
+   it('keeps changed assets visible in gitbundle while omitting binary content', async () => {
+      const repository = await createRepository()
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <circle cx="16" cy="16" r="16" fill="#0A0A0A"/>
+</svg>
+`
+      await writeRepositoryFile(repository, 'src/App.vue', '<template />\n')
+      await writeRepositoryFile(repository, 'public/logo.svg', svg)
+      await writeRepositoryFile(repository, 'debug.log', 'noise\n')
+      await mkdir(join(repository, 'assets'), { recursive: true })
+      await mkdir(join(repository, 'docs'), { recursive: true })
+      await mkdir(join(repository, 'models'), { recursive: true })
+      await mkdir(join(repository, 'data'), { recursive: true })
+      await mkdir(join(repository, 'node_modules/pkg'), { recursive: true })
+      await writeFile(join(repository, 'public/hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]))
+      await writeFile(join(repository, 'assets/photo.JPG'), Buffer.from([0xff, 0xd8, 0xff, 0, 1]))
+      await writeFile(join(repository, 'docs/spec.pdf'), Buffer.from([0x25, 0x50, 0x44, 0x46, 0, 1]))
+      await writeFile(join(repository, 'docs/brief.docx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1]))
+      await writeFile(join(repository, 'models/detector.onnx'), Buffer.from([0x08, 0x01, 0x12, 0x00]))
+      await writeFile(join(repository, 'public/codec.wasm'), Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]))
+      await writeFile(join(repository, 'assets/brand.zip'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1]))
+      await writeFile(join(repository, 'data/app.sqlite'), Buffer.from([0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0, 1]))
+      await writeFile(join(repository, 'large-hero.png'), Buffer.alloc(2 * 1024 * 1024, 1))
+      await writeFile(join(repository, 'node_modules/pkg/hidden.png'), Buffer.from([1, 2, 3]))
+
+      const pathChanges = await collectEligibleChanges(repository)
+      assert.deepEqual(pathChanges.map((change) => change.path), ['src/App.vue'])
+
+      const bundleChanges = await collectEligibleChanges(repository, 'bundle')
+      assert.deepEqual(
+         bundleChanges.map((change) => change.path),
+         [
+            'assets/brand.zip',
+            'assets/photo.JPG',
+            'data/app.sqlite',
+            'docs/brief.docx',
+            'docs/spec.pdf',
+            'large-hero.png',
+            'models/detector.onnx',
+            'public/codec.wasm',
+            'public/hero.png',
+            'public/logo.svg',
+            'src/App.vue',
+         ]
+      )
+
+      const bundle = await createMarkdownBundle(repository, bundleChanges, { maxFileBytes: 64 })
+      assert.match(bundle, /### \[NEW\] src\/App\.vue/)
+      assert.match(bundle, /```vue\n<template \/>/)
+      assert.match(bundle, /### \[NEW\] public\/logo\.svg/)
+      assert.match(bundle, /```svg\n<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)
+      assert.match(bundle, /<circle cx="16" cy="16" r="16" fill="#0A0A0A"\/>/)
+      assert.match(bundle, /### \[NEW\] public\/hero\.png/)
+      assert.match(bundle, /```text\n\[Binary file: hero\.png - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] assets\/photo\.JPG/)
+      assert.match(bundle, /```text\n\[Binary file: photo\.JPG - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] docs\/spec\.pdf/)
+      assert.match(bundle, /```text\n\[Binary file: spec\.pdf - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] docs\/brief\.docx/)
+      assert.match(bundle, /```text\n\[Binary file: brief\.docx - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] models\/detector\.onnx/)
+      assert.match(bundle, /```text\n\[Binary file: detector\.onnx - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] public\/codec\.wasm/)
+      assert.match(bundle, /```text\n\[Binary file: codec\.wasm - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] assets\/brand\.zip/)
+      assert.match(bundle, /```text\n\[Binary file: brand\.zip - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] data\/app\.sqlite/)
+      assert.match(bundle, /```text\n\[Binary file: app\.sqlite - content omitted\]\n```/)
+      assert.match(bundle, /### \[NEW\] large-hero\.png/)
+      assert.match(bundle, /```text\n\[Binary file: large-hero\.png - content omitted\]\n```/)
+      assert.doesNotMatch(bundle, /FILE TOO LARGE/)
+      assert.doesNotMatch(bundle, /node_modules|debug\.log/)
+      assert.doesNotMatch(bundle, /\u0089PNG|%PDF/)
+
+      let pathsCopied = ''
+      await runClipboardCommand('gitpaths', repository, undefined, async (content) => {
+         pathsCopied = content
+      })
+      assert.match(pathsCopied, /src\/App\.vue/)
+      assert.doesNotMatch(
+         pathsCopied,
+         /hero\.png|logo\.svg|photo\.JPG|spec\.pdf|brief\.docx|detector\.onnx|codec\.wasm|brand\.zip|app\.sqlite/
+      )
+
+      let bundled = ''
+      await runClipboardCommand('gitbundle', repository, undefined, async (content) => {
+         bundled = content
+      })
+      assert.match(bundled, /### \[NEW\] public\/hero\.png/)
+      assert.match(bundled, /```svg\n<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)
+      assert.match(bundled, /\[Binary file: spec\.pdf - content omitted\]/)
+      assert.match(bundled, /\[Binary file: detector\.onnx - content omitted\]/)
+      assert.match(bundled, /\[Binary file: codec\.wasm - content omitted\]/)
+   })
+
+   it('preserves deletion, rename, and sensitive handling for bundled assets', async () => {
+      const repository = await createRepository()
+      await writeRepositoryFile(repository, 'icon.svg', '<svg></svg>\n')
+      await writeFile(join(repository, 'hero-v2.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+      const bundle = await createMarkdownBundle(repository, [
+         { kind: 'deleted', path: 'old.png' },
+         {
+            kind: 'renamed',
+            path: 'hero-v2.png',
+            previousPath: 'hero.png',
+            isContentUnchanged: true,
+         },
+         { kind: 'renamed', path: 'icon.svg', previousPath: 'logo.svg' },
+         { kind: 'new', path: '.env' },
+      ])
+
+      assert.match(bundle, /### \[DELETED\] old\.png/)
+      assert.match(bundle, /```text\n\[FILE DELETED\]\n```/)
+      assert.match(bundle, /### \[RENAMED\] hero\.png -> hero-v2\.png/)
+      assert.match(bundle, /```text\n\[NO CHANGES IN FILE - RENAMED ONLY\]\n```/)
+      assert.match(bundle, /### \[RENAMED\] logo\.svg -> icon\.svg/)
+      assert.match(bundle, /```svg\n<svg><\/svg>/)
+      assert.match(bundle, /```text\n\[SENSITIVE FILE OMITTED\]\n```/)
+      assert.doesNotMatch(bundle, /Binary file: old\.png/)
    })
 
    it('builds one bounded Markdown document with clear repository boundaries', async () => {
       const app = await createRepository()
       const api = await createRepository()
       await writeRepositoryFile(app, 'src/App.vue', '<template />\n')
+      await writeRepositoryFile(app, 'public/mark.svg', '<svg id="mark"></svg>\n')
+      await writeFile(join(app, 'public/hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
       await writeRepositoryFile(api, 'src/server.ts', 'export const ready = true\n')
+      await mkdir(join(api, 'docs'), { recursive: true })
+      await writeFile(join(api, 'docs/spec.pdf'), Buffer.from([0x25, 0x50, 0x44, 0x46]))
 
       const bundle = await createCombinedMarkdownBundle([
-         { root: app, name: 'erp-app', changes: [{ kind: 'new', path: 'src/App.vue' }] },
-         { root: api, name: 'erp-api', changes: [{ kind: 'new', path: 'src/server.ts' }] },
+         {
+            root: app,
+            name: 'erp-app',
+            changes: [
+               { kind: 'new', path: 'src/App.vue' },
+               { kind: 'new', path: 'public/mark.svg' },
+               { kind: 'new', path: 'public/hero.png' },
+            ],
+         },
+         {
+            root: api,
+            name: 'erp-api',
+            changes: [
+               { kind: 'new', path: 'src/server.ts' },
+               { kind: 'new', path: 'docs/spec.pdf' },
+            ],
+         },
       ])
 
-      assert.match(bundle, /^# Repository Bundle\n\nRepositories: 2\nFiles: 2/m)
-      assert.match(bundle, /## erp-app\n\nPath: .*\nChanged files: 1/)
-      assert.match(bundle, /## erp-api\n\nPath: .*\nChanged files: 1/)
+      assert.match(bundle, /^# Repository Bundle\n\nRepositories: 2\nFiles: 5/m)
+      assert.match(bundle, /## erp-app\n\nPath: .*\nChanged files: 3/)
+      assert.match(bundle, /## erp-api\n\nPath: .*\nChanged files: 2/)
       assert.match(bundle, /```vue\n<template \/>/)
+      assert.match(bundle, /```svg\n<svg id="mark"><\/svg>/)
+      assert.match(bundle, /\[Binary file: hero\.png - content omitted\]/)
       assert.match(bundle, /```ts\nexport const ready/)
+      assert.match(bundle, /\[Binary file: spec\.pdf - content omitted\]/)
    })
 
    it('handles missing, unreadable, and oversized files without truncating content', async () => {
       const repository = await createRepository()
       await mkdir(join(repository, 'replaced-with-directory'))
       await writeRepositoryFile(repository, 'large.txt', '12345')
+      await writeRepositoryFile(repository, 'large.svg', '<svg>12345</svg>\n')
       const bundle = await createMarkdownBundle(
          repository,
          [
             { kind: 'modified', path: 'missing.txt' },
             { kind: 'modified', path: 'replaced-with-directory' },
             { kind: 'modified', path: 'large.txt' },
+            { kind: 'modified', path: 'large.svg' },
+            { kind: 'modified', path: 'missing.png' },
          ],
          { maxFileBytes: 4 }
       )
 
       assert.match(bundle, /\[FILE NOT FOUND\]/)
       assert.match(bundle, /\[FILE UNREADABLE\]/)
-      assert.match(bundle, /\[FILE TOO LARGE\]/)
+      assert.equal((bundle.match(/\[FILE TOO LARGE\]/g) ?? []).length, 2)
+      assert.match(bundle, /### \[MODIFIED\] missing\.png/)
+      assert.match(bundle, /```text\n\[FILE NOT FOUND\]\n```/)
       assert.equal(fileReadPlaceholder(Object.assign(new Error('denied'), { code: 'EACCES' })), '[FILE UNREADABLE]')
    })
 
@@ -852,6 +1031,23 @@ describe('clipboard commands', () => {
          copied = true
       })
       assert.equal(copied, false)
+   })
+
+   it('includes omitted-content assets in multi-repository workspace bundles', async () => {
+      const app = await createRepository()
+      const api = await createRepository()
+      await writeRepositoryFile(app, 'src/app.ts', 'app\n')
+      await writeFile(join(app, 'hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await writeRepositoryFile(api, 'mark.svg', '<svg></svg>\n')
+
+      let bundled = ''
+      await runWorkspaceBundleCommand([app, api], undefined, async (content) => {
+         bundled = content
+      })
+      assert.match(bundled, /^# Repository Bundle\n\nRepositories: 2\nFiles: 3/m)
+      assert.match(bundled, /### \[NEW\] src\/app\.ts/)
+      assert.match(bundled, /\[Binary file: hero\.png - content omitted\]/)
+      assert.match(bundled, /```svg\n<svg><\/svg>/)
    })
 
    it('persists and resolves named workspaces without storing file content', async () => {
