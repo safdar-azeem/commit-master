@@ -126,7 +126,7 @@ After a successful copy, the command prints `8 file paths copied.` using the act
 
 ## Copy a Markdown Change Bundle
 
-Use `gitbundle` to copy the complete current contents of eligible changed files as Markdown:
+Use `gitbundle` to copy a Markdown representation of eligible changed files:
 
 ```bash
 gitbundle
@@ -145,27 +145,33 @@ Repository: /completeProjectPath
 }
 ```
 
-### [MODIFIED] src/index.ts
+### [NEW] public/logo.svg
 
-```ts
-export const ready = true
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"></svg>
+```
+
+### [NEW] public/hero.png
+
+```text
+[Binary file: hero.png - content omitted]
 ```
 
 ------------------------------
 ````
 
-The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. It uses these explicit placeholders:
+The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. SVG files are included as readable source with an `svg` fence. Binary images, audio, video, documents, models, archives, databases, WebAssembly, native binaries, and similar non-text files stay visible by path, with their payloads replaced by a short omission placeholder. It uses these explicit placeholders:
 
 - `[SENSITIVE FILE OMITTED]` for environment files, credentials, private keys, and other protected files
 - `[FILE DELETED]` for deleted files
 - `[FILE NOT FOUND]` when a changed file disappears before it can be read
 - `[FILE UNREADABLE]` for inaccessible or replaced files
-- `[FILE TOO LARGE]` when one file exceeds 1 MiB
-- `[BINARY FILE OMITTED]` for binary or unsupported special-file content
+- `[FILE TOO LARGE]` when one textual file exceeds 1 MiB
+- `[Binary file: filename.png - content omitted]` for binary images, media, documents, and other non-text content
 
-Commit Master never silently truncates file content. Individual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository.
+Commit Master never silently truncates file content. Individual textual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. Binary assets represented by an omission placeholder are not subject to the per-file textual size limit, because their payloads are never read into the bundle. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository.
 
-After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count.
+After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count of files represented in the bundle, including omitted-content assets.
 
 ### Bundle Multiple Repositories
 
@@ -176,7 +182,7 @@ gitbundle ./web-client ./api-service
 gitbundle /path/to/workspace/web-client /path/to/workspace/api-service
 ```
 
-Paths are resolved to Git roots and duplicate repositories are included once. The command makes one clipboard update only after all changed-file content has been read and the complete combined bundle passes the same 10 MiB safety limit. Its Markdown makes repository boundaries explicit:
+Paths are resolved to Git roots and duplicate repositories are included once. The command makes one clipboard update only after the complete combined bundle has been constructed and passes the same 10 MiB safety limit. Its Markdown makes repository boundaries explicit:
 
 ````markdown
 # Repository Bundle
@@ -230,14 +236,22 @@ Workspace names use letters, numbers, hyphens, and underscores. If a saved repos
 
 ## Default Clipboard Ignore Rules
 
-Both clipboard commands use one shared ignore policy. Git's own ignore rules are respected first. Commit Master additionally excludes:
+Clipboard commands share generated-file, lockfile, and directory exclusions. Git's own ignore rules are respected first. Commit Master additionally excludes from both `gitpaths` and `gitbundle`:
 
 - Exact names: `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `generated.ts`, `mongoose.gen.ts`, `resolvers.generated.ts`, `typeDefs.generated.ts`, `types.generated.ts`, `tsconfig.tsbuildinfo`, `tsconfig.node.tsbuildinfo`, and `.DS_Store`.
 - Generated patterns: `*.generated.ts` and `vite.config.ts.timestamp-*`.
 - Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
-- Extensions: `.log`, `.onnx`, `.TAG`, `.pdf`, `.docx`, `.csv`, common image/audio/video formats, archives, database files, WebAssembly, and native binaries.
+- Noise extensions: `.log`, `.TAG`, and `.csv`.
 
-Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included. The centralized eligibility rules apply identically to `gitpaths` and `gitbundle`.
+`gitpaths` also omits common image, audio, video, SVG, PDF, DOCX, ONNX, WASM, archive, database, and native-binary files, because it copies filesystem paths rather than a reviewable bundle.
+
+`gitbundle` keeps those meaningful asset and document files visible:
+
+- SVG is included as readable source with an `svg` code fence.
+- Binary images, audio, video, PDF, DOCX, ONNX, WASM, archives, databases, native binaries, and other omitted-content files appear by path with `[Binary file: filename.ext - content omitted]`.
+- Their presence counts toward the bundled file count. Binary payloads are never read into the bundle.
+
+Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included.
 
 Sensitive paths—including `.env` variants, private-key formats, credential JSON files, `.npmrc`, `.pypirc`, and `.netrc`—remain in the shared eligible list. `gitpaths` copies only their paths, while `gitbundle` replaces their content with `[SENSITIVE FILE OMITTED]`, even when the file is already tracked by Git.
 
