@@ -28,35 +28,49 @@ const u32 = (value: number): Buffer => {
    return buffer
 }
 
-export const createZipArchive = (entries: Record<string, string | Buffer>): Buffer => {
+export const createZipArchive = (
+   entries: Record<string, string | Buffer>,
+   options: { dataDescriptors?: boolean } = {}
+): Buffer => {
    const locals: Buffer[] = []
    const centrals: Buffer[] = []
    let offset = 0
+   const dataDescriptors = options.dataDescriptors === true
+   const localFlags = dataDescriptors ? 0x8 : 0
    for (const [name, value] of Object.entries(entries)) {
       const uncompressed = typeof value === 'string' ? Buffer.from(value, 'utf8') : value
       const compressed = deflateRawSync(uncompressed)
       const checksum = crc32(uncompressed)
       const nameBuffer = Buffer.from(name, 'utf8')
+      const descriptor = dataDescriptors
+         ? Buffer.concat([
+              Buffer.from('PK\u0007\u0008', 'binary'),
+              u32(checksum),
+              u32(compressed.length),
+              u32(uncompressed.length),
+           ])
+         : Buffer.alloc(0)
       const local = Buffer.concat([
          Buffer.from('PK\u0003\u0004', 'binary'),
          u16(20),
-         u16(0),
+         u16(localFlags),
          u16(8),
          u16(0),
          u16(0),
-         u32(checksum),
-         u32(compressed.length),
-         u32(uncompressed.length),
+         u32(dataDescriptors ? 0 : checksum),
+         u32(dataDescriptors ? 0 : compressed.length),
+         u32(dataDescriptors ? 0 : uncompressed.length),
          u16(nameBuffer.length),
          u16(0),
          nameBuffer,
          compressed,
+         descriptor,
       ])
       const central = Buffer.concat([
          Buffer.from('PK\u0001\u0002', 'binary'),
          u16(20),
          u16(20),
-         u16(0),
+         u16(localFlags),
          u16(8),
          u16(0),
          u16(0),
@@ -142,6 +156,66 @@ const escapeXml = (value: string): string =>
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
 
+const TINY_PNG = Buffer.from(
+   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQG/wfQNngAAAABJRU5ErkJggg==',
+   'base64'
+)
+
+export type DocxBodyBlock =
+   | { type: 'paragraph'; text: string; imageFileName?: string; after?: string }
+   | { type: 'image'; fileName: string }
+   | { type: 'chart' }
+   | { type: 'table'; rows: ReadonlyArray<ReadonlyArray<{ text?: string; imageFileName?: string }>> }
+
+const drawingXml = (relId: string, fileName: string): string => `<w:r><w:drawing>
+  <wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+    <wp:extent cx="100" cy="100"/>
+    <wp:docPr id="1" name="${escapeXml(fileName)}"/>
+    <a:graphic>
+      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+        <pic:pic>
+          <pic:nvPicPr><pic:cNvPr id="0" name="${escapeXml(fileName)}"/><pic:cNvPicPr/></pic:nvPicPr>
+          <pic:blipFill><a:blip r:embed="${escapeXml(relId)}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+          <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+        </pic:pic>
+      </a:graphicData>
+    </a:graphic>
+  </wp:inline>
+</w:drawing></w:r>`
+
+const chartDrawingXml = (relId: string): string => `<w:r><w:drawing>
+  <wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+    <wp:extent cx="100" cy="100"/>
+    <wp:docPr id="1" name="Chart 1"/>
+    <a:graphic>
+      <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+        <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="${escapeXml(relId)}"/>
+      </a:graphicData>
+    </a:graphic>
+  </wp:inline>
+</w:drawing></w:r>`
+
+const paragraphXml = (text: string, heading: boolean, extraRuns = ''): string =>
+   `<w:p>${heading ? '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' : ''}${text ? `<w:r><w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r>` : ''}${extraRuns}</w:p>`
+
+const tableXml = (
+   rows: ReadonlyArray<ReadonlyArray<{ text?: string; imageFileName?: string }>>,
+   imageRel: (fileName: string) => string
+): string =>
+   `<w:tbl>${rows
+      .map(
+         (row) =>
+            `<w:tr>${row
+               .map((cell) => {
+                  const image = cell.imageFileName
+                     ? drawingXml(imageRel(cell.imageFileName), cell.imageFileName)
+                     : ''
+                  return `<w:tc>${paragraphXml(cell.text ?? '', false, image)}</w:tc>`
+               })
+               .join('')}</w:tr>`
+      )
+      .join('')}</w:tbl>`
+
 const notesPartXml = (kind: 'footnotes' | 'endnotes', items: readonly string[]): string => {
    const itemTag = kind === 'footnotes' ? 'footnote' : 'endnote'
    const separators = [
@@ -183,37 +257,75 @@ export const createMinimalDocx = (
    sections: {
       header?: string
       footer?: string
+      headerImageFileName?: string
+      footerImageFileName?: string
       footnotes?: readonly string[]
       endnotes?: readonly string[]
+      bodyBlocks?: readonly DocxBodyBlock[]
+      dataDescriptors?: boolean
    } = {}
 ): Buffer => {
    const footnotes = sections.footnotes ?? []
    const endnotes = sections.endnotes ?? []
-   const body =
-      paragraphs
-         .map(
-            (paragraph, index) =>
-               `<w:p>${index === 0 ? '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>' : ''}<w:r><w:t xml:space="preserve">${escapeXml(paragraph)}</w:t></w:r></w:p>`
-         )
-         .join('') +
-      noteAnchorParagraphs('footnote', footnotes) +
-      noteAnchorParagraphs('endnote', endnotes)
-   const headerXml = sections.header
-      ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:p><w:r><w:t xml:space="preserve">${escapeXml(sections.header)}</w:t></w:r></w:p>
+   const blocks: readonly DocxBodyBlock[] =
+      sections.bodyBlocks ?? paragraphs.map((text) => ({ type: 'paragraph', text }))
+   const imageNames = new Set<string>()
+   let chartCount = 0
+   const rememberImage = (fileName: string): string => {
+      imageNames.add(fileName)
+      return `rIdImg${[...imageNames].indexOf(fileName) + 1}`
+   }
+   const bodyBlocksXml = blocks
+      .map((block, index) => {
+         if (block.type === 'paragraph') {
+            const image = block.imageFileName
+               ? drawingXml(rememberImage(block.imageFileName), block.imageFileName)
+               : ''
+            const after = block.after
+               ? `<w:r><w:t xml:space="preserve">${escapeXml(block.after)}</w:t></w:r>`
+               : ''
+            return paragraphXml(block.text, index === 0 && !sections.bodyBlocks, `${image}${after}`)
+         }
+         if (block.type === 'image') {
+            return paragraphXml('', false, drawingXml(rememberImage(block.fileName), block.fileName))
+         }
+         if (block.type === 'chart') {
+            chartCount += 1
+            return paragraphXml('', false, chartDrawingXml(`rIdChart${chartCount}`))
+         }
+         return tableXml(block.rows, rememberImage)
+      })
+      .join('')
+   const body = `${bodyBlocksXml}${noteAnchorParagraphs('footnote', footnotes)}${noteAnchorParagraphs('endnote', endnotes)}`
+   const headerImageRel = sections.headerImageFileName
+      ? rememberImage(sections.headerImageFileName)
+      : undefined
+   const footerImageRel = sections.footerImageFileName
+      ? rememberImage(sections.footerImageFileName)
+      : undefined
+   const headerXml =
+      sections.header || headerImageRel
+         ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>${headerImageRel && sections.headerImageFileName ? drawingXml(headerImageRel, sections.headerImageFileName) : ''}${
+       sections.header ? `<w:r><w:t xml:space="preserve">${escapeXml(sections.header)}</w:t></w:r>` : ''
+    }</w:p>
 </w:hdr>
 `
-      : undefined
-   const footerXml = sections.footer
-      ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:p><w:r><w:t xml:space="preserve">${escapeXml(sections.footer)}</w:t></w:r></w:p>
+         : undefined
+   const footerXml =
+      sections.footer || footerImageRel
+         ? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>${footerImageRel && sections.footerImageFileName ? drawingXml(footerImageRel, sections.footerImageFileName) : ''}${
+       sections.footer ? `<w:r><w:t xml:space="preserve">${escapeXml(sections.footer)}</w:t></w:r>` : ''
+    }</w:p>
 </w:ftr>
 `
-      : undefined
+         : undefined
    const footnotesXml = footnotes.length > 0 ? notesPartXml('footnotes', footnotes) : undefined
    const endnotesXml = endnotes.length > 0 ? notesPartXml('endnotes', endnotes) : undefined
+   const imageList = [...imageNames]
    const partOverrides = [
       headerXml
          ? '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
@@ -243,6 +355,13 @@ export const createMinimalDocx = (
       endnotesXml
          ? '<Relationship Id="rIdEndnotes" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/endnotes" Target="endnotes.xml"/>'
          : '',
+      ...imageList.map(
+         (fileName, index) =>
+            `<Relationship Id="rIdImg${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${fileName}"/>`
+      ),
+      ...Array.from({ length: chartCount }, (_, index) =>
+         `<Relationship Id="rIdChart${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="charts/chart${index + 1}.xml"/>`
+      ),
    ]
       .filter(Boolean)
       .join('\n  ')
@@ -252,11 +371,15 @@ export const createMinimalDocx = (
    ]
       .filter(Boolean)
       .join('')
+   const mediaEntries = Object.fromEntries(
+      imageList.map((fileName) => [`word/media/${fileName}`, TINY_PNG])
+   )
    return createZipArchive({
       '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
   ${partOverrides}
 </Types>
@@ -281,14 +404,69 @@ export const createMinimalDocx = (
 </w:document>
 `,
       ...(headerXml ? { 'word/header1.xml': headerXml } : {}),
+      ...(headerImageRel && sections.headerImageFileName
+         ? {
+              'word/_rels/header1.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="${headerImageRel}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${sections.headerImageFileName}"/>
+</Relationships>
+`,
+           }
+         : {}),
       ...(footerXml ? { 'word/footer1.xml': footerXml } : {}),
+      ...(footerImageRel && sections.footerImageFileName
+         ? {
+              'word/_rels/footer1.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="${footerImageRel}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${sections.footerImageFileName}"/>
+</Relationships>
+`,
+           }
+         : {}),
       ...(footnotesXml ? { 'word/footnotes.xml': footnotesXml } : {}),
       ...(endnotesXml ? { 'word/endnotes.xml': endnotesXml } : {}),
+      ...mediaEntries,
       ...extraEntries,
-   })
+   }, sections.dataDescriptors ? { dataDescriptors: true } : undefined)
 }
 
-const slideXml = (title: string, body: string): string => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+const pictureXml = (relId: string, fileName: string): string => `
+      <p:pic>
+        <p:nvPicPr>
+          <p:cNvPr id="4" name="${escapeXml(fileName)}"/>
+          <p:cNvPicPr/>
+          <p:nvPr/>
+        </p:nvPicPr>
+        <p:blipFill>
+          <a:blip r:embed="${escapeXml(relId)}"/>
+          <a:stretch><a:fillRect/></a:stretch>
+        </p:blipFill>
+        <p:spPr>
+          <a:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></a:xfrm>
+          <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+        </p:spPr>
+      </p:pic>`
+
+const chartFrameXml = (relId: string): string => `
+      <p:graphicFrame>
+        <p:nvGraphicFramePr>
+          <p:cNvPr id="5" name="Chart 1"/>
+          <p:cNvGraphicFramePr/>
+          <p:nvPr/>
+        </p:nvGraphicFramePr>
+        <p:xfrm><a:off x="0" y="0"/><a:ext cx="100" cy="100"/></p:xfrm>
+        <a:graphic>
+          <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+            <c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="${escapeXml(relId)}"/>
+          </a:graphicData>
+        </a:graphic>
+      </p:graphicFrame>`
+
+const slideXml = (
+   title: string,
+   body: string,
+   extras: { imageFileName?: string; chart?: boolean } = {}
+): string => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
     <p:spTree>
@@ -303,7 +481,7 @@ const slideXml = (title: string, body: string): string => `<?xml version="1.0" e
         <p:nvSpPr><p:cNvPr id="3" name="Body"/><p:cNvSpPr txBox="1"/><p:nvPr><p:ph type="body" idx="1"/></p:nvPr></p:nvSpPr>
         <p:spPr/>
         <p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>${escapeXml(body)}</a:t></a:r></a:p></p:txBody>
-      </p:sp>
+      </p:sp>${extras.imageFileName ? pictureXml('rIdImg', extras.imageFileName) : ''}${extras.chart ? chartFrameXml('rIdChart') : ''}
     </p:spTree>
   </p:cSld>
   <p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>
@@ -327,13 +505,14 @@ const notesSlideXml = (notes: string): string => `<?xml version="1.0" encoding="
 `
 
 export const createMinimalPptx = (
-   slides: ReadonlyArray<{ title: string; body: string; notes?: string }>
+   slides: ReadonlyArray<{ title: string; body: string; notes?: string; imageFileName?: string; chart?: boolean }>
 ): Buffer => {
    const entries: Record<string, string | Buffer> = {
       '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
   <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="png" ContentType="image/png"/>
   <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
   ${slides
      .map(
@@ -385,14 +564,35 @@ export const createMinimalPptx = (
 
    for (const [index, slide] of slides.entries()) {
       const slideNumber = index + 1
-      entries[`ppt/slides/slide${slideNumber}.xml`] = slideXml(slide.title, slide.body)
-      if (slide.notes) {
+      entries[`ppt/slides/slide${slideNumber}.xml`] = slideXml(slide.title, slide.body, {
+         imageFileName: slide.imageFileName,
+         chart: slide.chart,
+      })
+      const slideRelationships = [
+         slide.notes
+            ? `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${slideNumber}.xml"/>`
+            : '',
+         slide.imageFileName
+            ? `<Relationship Id="rIdImg" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${slide.imageFileName}"/>`
+            : '',
+         slide.chart
+            ? '<Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>'
+            : '',
+      ]
+         .filter(Boolean)
+         .join('\n  ')
+      if (slideRelationships) {
          entries[`ppt/slides/_rels/slide${slideNumber}.xml.rels`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide${slideNumber}.xml"/>
+  ${slideRelationships}
 </Relationships>
 `
+      }
+      if (slide.notes) {
          entries[`ppt/notesSlides/notesSlide${slideNumber}.xml`] = notesSlideXml(slide.notes)
+      }
+      if (slide.imageFileName) {
+         entries[`ppt/media/${slide.imageFileName}`] = TINY_PNG
       }
    }
 
