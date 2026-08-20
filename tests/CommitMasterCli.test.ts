@@ -4,6 +4,7 @@ import {
    chmod,
    mkdir,
    mkdtemp,
+   open,
    readFile,
    realpath,
    rename,
@@ -36,10 +37,12 @@ import {
 } from '../dist/CommitMasterBundle.js'
 import {
    collectEligibleChanges,
+   detectExtractableDocumentType,
    escapeDisplayedPath,
    escapeMarkdownHeadingPath,
    isBundleExcludedPath,
    isDefaultIgnoredPath,
+   isExtractableDocumentPath,
    isOmittedBinaryContentPath,
    isSensitivePath,
    resolveAbsoluteChangedPath,
@@ -61,6 +64,17 @@ import { copyToClipboard } from '../dist/CommitMasterClipboard.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
 import { confirmGitInitialization, parseConfirmationAnswer } from '../dist/CommitMasterPrompt.js'
+import { ClipboardInterruptedError } from '../dist/CommitMasterErrors.js'
+import {
+   MAX_DOCUMENT_SOURCE_BYTES,
+   MAX_EXTRACTED_DOCUMENT_BYTES,
+   extractDocumentContent,
+} from '../dist/CommitMasterDocumentContent.js'
+import {
+   createMinimalDocx,
+   createMinimalPdf,
+   createMinimalPptx,
+} from './CommitMasterDocumentFixtures.js'
 
 const gitspanBinary = fileURLToPath(
    new URL('../dist/CommitMasterCommitspan.js', import.meta.url)
@@ -542,7 +556,7 @@ describe('clipboard commands', () => {
       }
 
       const omittedBinaryExtensions = [
-         '.pdf', '.docx', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp',
+         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.avif', '.bmp',
          '.ico', '.tif', '.tiff', '.heic', '.heif', '.mp4', '.mov', '.avi', '.mkv',
          '.webm', '.m4v', '.mpeg', '.mpg', '.wmv', '.flv', '.mp3', '.wav', '.m4a',
          '.aac', '.flac', '.ogg', '.opus', '.wma', '.aiff', '.aif', '.onnx', '.zip',
@@ -553,7 +567,25 @@ describe('clipboard commands', () => {
          assert.equal(isDefaultIgnoredPath(`src/FILE${extension}`), true, extension)
          assert.equal(isBundleExcludedPath(`src/FILE${extension}`), false, extension)
          assert.equal(isOmittedBinaryContentPath(`src/FILE${extension}`), true, extension)
+         assert.equal(isExtractableDocumentPath(`src/FILE${extension}`), false, extension)
       }
+
+      for (const documentPath of [
+         'docs/spec.docx',
+         'docs/SPEC.DOCX',
+         'reports/review.pdf',
+         'reports/REVIEW.PDF',
+         'talks/roadmap.pptx',
+         'talks/ROADMAP.PPTX',
+      ]) {
+         assert.equal(isDefaultIgnoredPath(documentPath), true, documentPath)
+         assert.equal(isBundleExcludedPath(documentPath), false, documentPath)
+         assert.equal(isOmittedBinaryContentPath(documentPath), false, documentPath)
+         assert.equal(isExtractableDocumentPath(documentPath), true, documentPath)
+      }
+      assert.equal(detectExtractableDocumentType('docs/Spec.Docx'), 'docx')
+      assert.equal(detectExtractableDocumentType('reports/Review.PDF'), 'pdf')
+      assert.equal(detectExtractableDocumentType('talks/Roadmap.Pptx'), 'pptx')
 
       for (const svgPath of ['src/FILE.svg', 'src/FILE.SVG', 'public/logo.Svg']) {
          assert.equal(isDefaultIgnoredPath(svgPath), true, svgPath)
@@ -743,7 +775,7 @@ describe('clipboard commands', () => {
          ]
       )
 
-      const bundle = await createMarkdownBundle(repository, bundleChanges, { maxFileBytes: 64 })
+      const bundle = await createMarkdownBundle(repository, bundleChanges, { maxFileBytes: 1024 })
       assert.match(bundle, /### \[NEW\] src\/App\.vue/)
       assert.match(bundle, /```vue\n<template \/>/)
       assert.match(bundle, /### \[NEW\] public\/logo\.svg/)
@@ -754,9 +786,9 @@ describe('clipboard commands', () => {
       assert.match(bundle, /### \[NEW\] assets\/photo\.JPG/)
       assert.match(bundle, /```text\n\[Binary file: photo\.JPG - content omitted\]\n```/)
       assert.match(bundle, /### \[NEW\] docs\/spec\.pdf/)
-      assert.match(bundle, /```text\n\[Binary file: spec\.pdf - content omitted\]\n```/)
+      assert.match(bundle, /```text\n\[PDF content could not be extracted\]\n```/)
       assert.match(bundle, /### \[NEW\] docs\/brief\.docx/)
-      assert.match(bundle, /```text\n\[Binary file: brief\.docx - content omitted\]\n```/)
+      assert.match(bundle, /```text\n\[DOCX content could not be extracted\]\n```/)
       assert.match(bundle, /### \[NEW\] models\/detector\.onnx/)
       assert.match(bundle, /```text\n\[Binary file: detector\.onnx - content omitted\]\n```/)
       assert.match(bundle, /### \[NEW\] public\/codec\.wasm/)
@@ -787,7 +819,7 @@ describe('clipboard commands', () => {
       })
       assert.match(bundled, /### \[NEW\] public\/hero\.png/)
       assert.match(bundled, /```svg\n<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/)
-      assert.match(bundled, /\[Binary file: spec\.pdf - content omitted\]/)
+      assert.match(bundled, /\[PDF content could not be extracted\]/)
       assert.match(bundled, /\[Binary file: detector\.onnx - content omitted\]/)
       assert.match(bundled, /\[Binary file: codec\.wasm - content omitted\]/)
    })
@@ -819,6 +851,133 @@ describe('clipboard commands', () => {
       assert.doesNotMatch(bundle, /Binary file: old\.png/)
    })
 
+   it('extracts readable DOCX, PDF, and PPTX text for gitbundle review', async () => {
+      const repository = await createRepository()
+      await mkdir(join(repository, 'docs'), { recursive: true })
+      await mkdir(join(repository, 'reports'), { recursive: true })
+      await mkdir(join(repository, 'talks'), { recursive: true })
+      await writeFile(
+         join(repository, 'docs/product-spec.docx'),
+         createMinimalDocx(
+            ['Product Specification', 'Users authenticate using a session token.'],
+            {},
+            {
+               header: 'Confidential specification',
+               footer: 'Copyright Acme',
+               footnotes: ['Primary endpoint analysis excludes protocol deviations.'],
+               endnotes: ['See protocol appendix B for exclusion criteria.'],
+            }
+         )
+      )
+      await writeFile(
+         join(repository, 'docs/case-word.DOCX'),
+         createMinimalDocx(['Case Insensitive Word'])
+      )
+      await writeFile(
+         join(repository, 'reports/security-review.pdf'),
+         createMinimalPdf(['Security Review', 'Authentication Architecture'])
+      )
+      await writeFile(join(repository, 'reports/case-review.PDF'), createMinimalPdf(['Uppercase PDF']))
+      await writeFile(
+         join(repository, 'talks/product-roadmap.pptx'),
+         createMinimalPptx([
+            { title: '2027 Product Roadmap', body: 'Platform modernization', notes: 'Keep this confidential.' },
+            { title: 'Goals', body: 'Reduce infrastructure cost' },
+         ])
+      )
+      await writeFile(
+         join(repository, 'talks/case-deck.PPTX'),
+         createMinimalPptx([{ title: 'Uppercase Deck', body: 'One slide' }])
+      )
+      await writeFile(
+         join(repository, 'docs/large-spec.docx'),
+         createMinimalDocx(['Large source document'], {
+            'word/padding.bin': Buffer.alloc(2 * 1024 * 1024, 1),
+         })
+      )
+      await writeFile(join(repository, 'docs/broken.docx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1]))
+      await writeFile(join(repository, 'docs/broken.pdf'), Buffer.from('%PDF-not-valid'))
+      await writeFile(join(repository, 'docs/broken.pptx'), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1]))
+      await writeFile(join(repository, 'reports/scanned.pdf'), createMinimalPdf(['']))
+      await writeFile(join(repository, 'hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await writeRepositoryFile(repository, 'public/logo.svg', '<svg id="mark"></svg>\n')
+      await writeRepositoryFile(repository, 'src/App.vue', '<template />\n')
+
+      const pathChanges = await collectEligibleChanges(repository)
+      assert.deepEqual(pathChanges.map((change) => change.path), ['src/App.vue'])
+
+      const bundleChanges = await collectEligibleChanges(repository, 'bundle')
+      assert.ok(bundleChanges.some((change) => change.path === 'docs/product-spec.docx'))
+      assert.ok(bundleChanges.some((change) => change.path === 'reports/security-review.pdf'))
+      assert.ok(bundleChanges.some((change) => change.path === 'talks/product-roadmap.pptx'))
+      assert.equal(bundleChanges.length, 14)
+
+      const bundle = await createMarkdownBundle(repository, bundleChanges, { maxFileBytes: 64 })
+      assert.match(bundle, /### \[NEW\] docs\/product-spec\.docx/)
+      assert.match(bundle, /\[Extracted DOCX content\]/)
+      assert.match(bundle, /Document Header:/)
+      assert.match(bundle, /Confidential specification/)
+      assert.match(bundle, /Document Body:/)
+      assert.match(bundle, /Product Specification/)
+      assert.match(bundle, /Users authenticate using a session token\./)
+      assert.match(bundle, /Document Footer:/)
+      assert.match(bundle, /Copyright Acme/)
+      assert.match(bundle, /Document Notes:/)
+      assert.match(bundle, /The treatment demonstrated improved healing\./)
+      assert.match(bundle, /1\. Primary endpoint analysis excludes protocol deviations\./)
+      assert.match(bundle, /Study limitations are documented separately\./)
+      assert.match(bundle, /2\. See protocol appendix B for exclusion criteria\./)
+      assert.match(bundle, /### \[NEW\] docs\/case-word\.DOCX/)
+      assert.match(bundle, /Case Insensitive Word/)
+      assert.match(bundle, /### \[NEW\] reports\/security-review\.pdf/)
+      assert.match(bundle, /\[Extracted PDF content: 2 pages\]/)
+      assert.match(bundle, /--- Page 1 ---/)
+      assert.match(bundle, /Security Review/)
+      assert.match(bundle, /--- Page 2 ---/)
+      assert.match(bundle, /Authentication Architecture/)
+      assert.match(bundle, /### \[NEW\] reports\/case-review\.PDF/)
+      assert.match(bundle, /Uppercase PDF/)
+      assert.match(bundle, /### \[NEW\] talks\/product-roadmap\.pptx/)
+      assert.match(bundle, /\[Extracted PPTX content: 2 slides\]/)
+      assert.match(bundle, /--- Slide 1 ---/)
+      assert.match(bundle, /2027 Product Roadmap/)
+      assert.match(bundle, /Platform modernization/)
+      assert.match(bundle, /Speaker Notes:/)
+      assert.match(bundle, /Keep this confidential\./)
+      assert.match(bundle, /--- Slide 2 ---/)
+      assert.match(bundle, /Reduce infrastructure cost/)
+      assert.match(bundle, /### \[NEW\] talks\/case-deck\.PPTX/)
+      assert.match(bundle, /Uppercase Deck/)
+      assert.match(bundle, /### \[NEW\] docs\/large-spec\.docx/)
+      assert.match(bundle, /Large source document/)
+      assert.doesNotMatch(bundle, /FILE TOO LARGE/)
+      assert.match(bundle, /\[DOCX content could not be extracted\]/)
+      assert.match(bundle, /\[PDF content could not be extracted\]/)
+      assert.match(bundle, /\[PPTX content could not be extracted\]/)
+      assert.match(bundle, /\[PDF contains no extractable text - OCR not enabled\]/)
+      assert.match(bundle, /```text\n\[Binary file: hero\.png - content omitted\]\n```/)
+      assert.match(bundle, /```svg\n<svg id="mark"><\/svg>/)
+      assert.doesNotMatch(bundle, /word\/document\.xml|ppt\/slides/)
+
+      let pathsCopied = ''
+      await runClipboardCommand('gitpaths', repository, undefined, async (content) => {
+         pathsCopied = content
+      })
+      assert.match(pathsCopied, /src\/App\.vue/)
+      assert.doesNotMatch(pathsCopied, /product-spec\.docx|security-review\.pdf|product-roadmap\.pptx|hero\.png|logo\.svg/)
+
+      const missingBundle = await createMarkdownBundle(repository, [
+         { kind: 'modified', path: 'missing.pdf' },
+         { kind: 'modified', path: 'docs/product-spec.docx' },
+         { kind: 'new', path: '.env' },
+      ])
+      assert.match(missingBundle, /\[FILE NOT FOUND\]/)
+      assert.match(missingBundle, /\[Extracted DOCX content\]/)
+      assert.match(missingBundle, /Users authenticate using a session token\./)
+      assert.match(missingBundle, /\[SENSITIVE FILE OMITTED\]/)
+      assert.doesNotMatch(missingBundle, /super-secret/)
+   })
+
    it('builds one bounded Markdown document with clear repository boundaries', async () => {
       const app = await createRepository()
       const api = await createRepository()
@@ -827,7 +986,8 @@ describe('clipboard commands', () => {
       await writeFile(join(app, 'public/hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
       await writeRepositoryFile(api, 'src/server.ts', 'export const ready = true\n')
       await mkdir(join(api, 'docs'), { recursive: true })
-      await writeFile(join(api, 'docs/spec.pdf'), Buffer.from([0x25, 0x50, 0x44, 0x46]))
+      await writeFile(join(api, 'docs/spec.pdf'), createMinimalPdf(['API specification']))
+      await writeFile(join(api, 'docs/brief.docx'), createMinimalDocx(['Service brief']))
 
       const bundle = await createCombinedMarkdownBundle([
          {
@@ -845,23 +1005,28 @@ describe('clipboard commands', () => {
             changes: [
                { kind: 'new', path: 'src/server.ts' },
                { kind: 'new', path: 'docs/spec.pdf' },
+               { kind: 'new', path: 'docs/brief.docx' },
             ],
          },
       ])
 
-      assert.match(bundle, /^# Repository Bundle\n\nRepositories: 2\nFiles: 5/m)
+      assert.match(bundle, /^# Repository Bundle\n\nRepositories: 2\nFiles: 6/m)
       assert.match(bundle, /## erp-app\n\nPath: .*\nChanged files: 3/)
-      assert.match(bundle, /## erp-api\n\nPath: .*\nChanged files: 2/)
+      assert.match(bundle, /## erp-api\n\nPath: .*\nChanged files: 3/)
       assert.match(bundle, /```vue\n<template \/>/)
       assert.match(bundle, /```svg\n<svg id="mark"><\/svg>/)
       assert.match(bundle, /\[Binary file: hero\.png - content omitted\]/)
       assert.match(bundle, /```ts\nexport const ready/)
-      assert.match(bundle, /\[Binary file: spec\.pdf - content omitted\]/)
+      assert.match(bundle, /\[Extracted PDF content: 1 page\]/)
+      assert.match(bundle, /API specification/)
+      assert.match(bundle, /\[Extracted DOCX content\]/)
+      assert.match(bundle, /Service brief/)
    })
 
    it('handles missing, unreadable, and oversized files without truncating content', async () => {
       const repository = await createRepository()
       await mkdir(join(repository, 'replaced-with-directory'))
+      await mkdir(join(repository, 'report.pdf'))
       await writeRepositoryFile(repository, 'large.txt', '12345')
       await writeRepositoryFile(repository, 'large.svg', '<svg>12345</svg>\n')
       const bundle = await createMarkdownBundle(
@@ -872,6 +1037,8 @@ describe('clipboard commands', () => {
             { kind: 'modified', path: 'large.txt' },
             { kind: 'modified', path: 'large.svg' },
             { kind: 'modified', path: 'missing.png' },
+            { kind: 'modified', path: 'missing.docx' },
+            { kind: 'modified', path: 'report.pdf' },
          ],
          { maxFileBytes: 4 }
       )
@@ -880,7 +1047,10 @@ describe('clipboard commands', () => {
       assert.match(bundle, /\[FILE UNREADABLE\]/)
       assert.equal((bundle.match(/\[FILE TOO LARGE\]/g) ?? []).length, 2)
       assert.match(bundle, /### \[MODIFIED\] missing\.png/)
+      assert.match(bundle, /### \[MODIFIED\] missing\.docx/)
+      assert.match(bundle, /### \[MODIFIED\] report\.pdf/)
       assert.match(bundle, /```text\n\[FILE NOT FOUND\]\n```/)
+      assert.match(bundle, /```text\n\[FILE UNREADABLE\]\n```/)
       assert.equal(fileReadPlaceholder(Object.assign(new Error('denied'), { code: 'EACCES' })), '[FILE UNREADABLE]')
    })
 
@@ -908,6 +1078,203 @@ describe('clipboard commands', () => {
       assert.equal(clipboardCalled, false)
    })
 
+   it('stops clipboard mutation when extracted document text exceeds the bundle limit or the request is cancelled', async () => {
+      const repository = await createRepository()
+      await writeFile(
+         join(repository, 'notes.docx'),
+         createMinimalDocx(['Document review content that is long enough to exceed a tiny bundle cap.'])
+      )
+      let oversizedClipboardCalled = false
+      await assert.rejects(
+         runClipboardCommand(
+            'gitbundle',
+            repository,
+            undefined,
+            async () => {
+               oversizedClipboardCalled = true
+            },
+            (root, changes, options) =>
+               createMarkdownBundle(root, changes, {
+                  ...options,
+                  maxBundleBytes: Math.min(80, MAX_BUNDLE_BYTES),
+               })
+         ),
+         /bundle exceeds the 10 MiB safety limit/i
+      )
+      assert.equal(oversizedClipboardCalled, false)
+
+      const controller = new AbortController()
+      controller.abort()
+      let cancelledClipboardCalled = false
+      await assert.rejects(
+         runClipboardCommand('gitbundle', repository, controller.signal, async () => {
+            cancelledClipboardCalled = true
+         }),
+         ClipboardInterruptedError
+      )
+      assert.equal(cancelledClipboardCalled, false)
+   })
+
+   it('enforces document source and extracted-text safety limits without following document symlinks', async () => {
+      const repository = await createRepository()
+      const hugePath = join(repository, 'huge.pdf')
+      const huge = await open(hugePath, 'w')
+      await huge.truncate(MAX_DOCUMENT_SOURCE_BYTES + 1)
+      await huge.close()
+      const oversizedBundle = await createMarkdownBundle(repository, [
+         { kind: 'new', path: 'huge.pdf' },
+      ])
+      assert.match(oversizedBundle, /\[PDF source exceeds the 32 MiB extraction limit\]/)
+      assert.doesNotMatch(oversizedBundle, /could not be extracted|FILE TOO LARGE|Extracted PDF content/)
+
+      const truncated = await extractDocumentContent(createMinimalDocx(['placeholder']), 'docx', {
+         maxExtractedBytes: 64,
+         parseOffice: async () => ({
+            content: [{ type: 'paragraph', text: `Start ${'é'.repeat(400)} end` }],
+         }),
+      })
+      assert.equal(truncated.kind, 'content')
+      assert.match(truncated.content, /\[Extracted content truncated\]/)
+      assert.doesNotMatch(truncated.content, /\uFFFD/)
+      assert.equal(Buffer.from(truncated.content, 'utf8').toString('utf8'), truncated.content)
+      assert.ok(Buffer.byteLength(truncated.content) <= 64)
+      assert.ok(MAX_EXTRACTED_DOCUMENT_BYTES > 64)
+
+      const controller = new AbortController()
+      const parsing = extractDocumentContent(createMinimalDocx(['review']), 'pdf', {
+         signal: controller.signal,
+         parseOffice: async (_source, config) => {
+            const signal = config?.abortSignal as AbortSignal | undefined
+            return await new Promise<never>((_, reject) => {
+               const fail = (): void => {
+                  const error = new Error('Aborted')
+                  error.name = 'AbortError'
+                  reject(error)
+               }
+               if (signal?.aborted) fail()
+               else signal?.addEventListener('abort', fail, { once: true })
+            })
+         },
+      })
+      controller.abort()
+      await assert.rejects(parsing, (error: unknown) => error instanceof ClipboardInterruptedError)
+
+      const headerFooter = await extractDocumentContent(createMinimalDocx(['Body copy']), 'docx', {
+         parseOffice: async () => ({
+            content: [{ type: 'paragraph', text: 'Body copy' }],
+            auxiliary: {
+               headers: [
+                  { type: 'paragraph', text: 'Confidential specification' },
+                  { type: 'paragraph', text: 'Confidential specification' },
+               ],
+               footers: [{ type: 'paragraph', text: 'Copyright Acme' }],
+            },
+         }),
+      })
+      assert.equal(headerFooter.kind, 'content')
+      assert.match(headerFooter.content, /Document Header:\n\nConfidential specification/)
+      assert.equal(
+         (headerFooter.content.match(/Confidential specification/g) ?? []).length,
+         1
+      )
+      assert.match(headerFooter.content, /Document Body:\n\nBody copy/)
+      assert.match(headerFooter.content, /Document Footer:\n\nCopyright Acme/)
+
+      const parsedNotes = await extractDocumentContent(
+         createMinimalDocx(
+            ['Body copy'],
+            {},
+            {
+               footnotes: ['Primary endpoint analysis excludes protocol deviations.'],
+               endnotes: ['See protocol appendix B for exclusion criteria.'],
+            }
+         ),
+         'docx'
+      )
+      assert.equal(parsedNotes.kind, 'content')
+      assert.match(parsedNotes.content, /Document Body:\n\nBody copy/)
+      assert.match(parsedNotes.content, /The treatment demonstrated improved healing\./)
+      assert.match(parsedNotes.content, /Document Notes:\n\n1\. Primary endpoint analysis excludes protocol deviations\.\n\n2\. See protocol appendix B for exclusion criteria\./)
+      assert.doesNotMatch(parsedNotes.content, /Speaker Notes:/)
+      assert.equal(
+         (parsedNotes.content.match(/Primary endpoint analysis excludes protocol deviations\./g) ?? []).length,
+         1
+      )
+
+      const formattedNotes = await extractDocumentContent(Buffer.from('docx'), 'docx', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'paragraph',
+                  text: 'The treatment demonstrated improved healing.',
+                  children: [
+                     {
+                        type: 'text',
+                        text: 'The treatment demonstrated improved healing.',
+                        notes: [
+                           {
+                              type: 'note',
+                              text: 'Primary endpoint analysis excludes protocol deviations.',
+                              metadata: { noteType: 'footnote', noteId: '1' },
+                           },
+                           {
+                              type: 'note',
+                              text: 'Primary endpoint analysis excludes protocol deviations.',
+                              metadata: { noteType: 'footnote', noteId: '1' },
+                           },
+                        ],
+                     },
+                  ],
+               },
+               {
+                  type: 'paragraph',
+                  text: 'Study limitations are documented separately.',
+                  notes: [
+                     {
+                        type: 'note',
+                        text: 'See protocol appendix B for exclusion criteria.',
+                        children: [
+                           {
+                              type: 'paragraph',
+                              text: 'See protocol appendix B for exclusion criteria.',
+                           },
+                        ],
+                        metadata: { noteType: 'endnote', noteId: '1' },
+                     },
+                  ],
+               },
+               {
+                  type: 'paragraph',
+                  text: 'Already in the body.',
+                  notes: [{ type: 'note', text: 'Already in the body.' }],
+               },
+            ],
+         }),
+      })
+      assert.equal(formattedNotes.kind, 'content')
+      assert.match(
+         formattedNotes.content,
+         /Document Notes:\n\n1\. Primary endpoint analysis excludes protocol deviations\.\n\n2\. See protocol appendix B for exclusion criteria\./
+      )
+      assert.doesNotMatch(formattedNotes.content, /3\. /)
+      assert.equal((formattedNotes.content.match(/Already in the body\./g) ?? []).length, 1)
+
+      const pptxSpeakerNotes = await extractDocumentContent(Buffer.from('pptx'), 'pptx', {
+         parseOffice: async () => ({
+            content: [
+               {
+                  type: 'slide',
+                  children: [{ type: 'paragraph', text: 'Slide body' }],
+                  notes: [{ type: 'note', text: 'Keep this confidential.' }],
+               },
+            ],
+         }),
+      })
+      assert.equal(pptxSpeakerNotes.kind, 'content')
+      assert.match(pptxSpeakerNotes.content, /Speaker Notes:\n\nKeep this confidential\./)
+      assert.doesNotMatch(pptxSpeakerNotes.content, /Document Notes:/)
+   })
+
    it('escapes control and Markdown-sensitive path characters only for display', () => {
       assert.equal(escapeDisplayedPath('/repo/line\nbreak\t.ts'), '/repo/line\\nbreak\\t.ts')
       assert.equal(
@@ -924,12 +1291,22 @@ describe('clipboard commands', () => {
          const outside = join(await createProject(), 'outside-secret.txt')
          await writeFile(outside, 'must-not-be-read\n', 'utf8')
          await symlink(outside, join(repository, 'linked.txt'))
+         const outsideDocument = join(await createProject(), 'secret.docx')
+         await writeFile(
+            outsideDocument,
+            createMinimalDocx(['OUTSIDE-SECRET-DOCUMENT'])
+         )
+         await symlink(outsideDocument, join(repository, 'linked.docx'))
 
          const bundle = await createMarkdownBundle(repository, [
             { kind: 'new', path: 'linked.txt' },
+            { kind: 'new', path: 'linked.docx' },
          ])
          assert.match(bundle, new RegExp(outside.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+         assert.match(bundle, new RegExp(outsideDocument.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
          assert.doesNotMatch(bundle, /must-not-be-read/)
+         assert.doesNotMatch(bundle, /OUTSIDE-SECRET-DOCUMENT/)
+         assert.doesNotMatch(bundle, /Extracted DOCX content/)
       }
    )
 
@@ -1039,15 +1416,18 @@ describe('clipboard commands', () => {
       await writeRepositoryFile(app, 'src/app.ts', 'app\n')
       await writeFile(join(app, 'hero.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
       await writeRepositoryFile(api, 'mark.svg', '<svg></svg>\n')
+      await writeFile(join(api, 'brief.docx'), createMinimalDocx(['Workspace document']))
 
       let bundled = ''
       await runWorkspaceBundleCommand([app, api], undefined, async (content) => {
          bundled = content
       })
-      assert.match(bundled, /^# Repository Bundle\n\nRepositories: 2\nFiles: 3/m)
+      assert.match(bundled, /^# Repository Bundle\n\nRepositories: 2\nFiles: 4/m)
       assert.match(bundled, /### \[NEW\] src\/app\.ts/)
       assert.match(bundled, /\[Binary file: hero\.png - content omitted\]/)
       assert.match(bundled, /```svg\n<svg><\/svg>/)
+      assert.match(bundled, /\[Extracted DOCX content\]/)
+      assert.match(bundled, /Workspace document/)
    })
 
    it('persists and resolves named workspaces without storing file content', async () => {
