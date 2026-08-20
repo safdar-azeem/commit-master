@@ -38,7 +38,10 @@ export const runClipboardCommand = async (
       throw new CommitMasterError('The current directory is not inside a Git repository.')
    }
 
-   const changes = await collectEligibleChanges(repositoryRoot)
+   const changes = await collectEligibleChanges(
+      repositoryRoot,
+      command === 'gitbundle' ? 'bundle' : 'paths'
+   )
    throwIfCopyCancelled(signal)
    if (changes.length === 0) {
       console.log('Nothing to copy. The working tree is clean.')
@@ -71,7 +74,7 @@ export const runWorkspaceBundleCommand = async (
    }> = []
    for (const root of repositoryRoots) {
       throwIfCopyCancelled(signal)
-      const changes = await collectEligibleChanges(root)
+      const changes = await collectEligibleChanges(root, 'bundle')
       repositories.push({ root, name: path.basename(root) || root, changes })
    }
    throwIfCopyCancelled(signal)
