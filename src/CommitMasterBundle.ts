@@ -5,6 +5,7 @@ import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErro
 import {
    escapeDisplayedPath,
    escapeMarkdownHeadingPath,
+   isOmittedBinaryContentPath,
    isSensitivePath,
    resolveAbsoluteChangedPath,
 } from './CommitMasterChangedFiles.js'
@@ -30,6 +31,7 @@ const LANGUAGE_BY_SUFFIX: ReadonlyArray<readonly [string, string]> = [
    ['.yaml', 'yaml'],
    ['.yml', 'yaml'],
    ['.xml', 'xml'],
+   ['.svg', 'svg'],
    ['.zsh', 'bash'],
    ['.sh', 'bash'],
    ['.py', 'python'],
@@ -66,6 +68,11 @@ type FileContentResult =
 export const detectFenceLanguage = (filePath: string): string => {
    const lowerPath = filePath.toLowerCase()
    return LANGUAGE_BY_SUFFIX.find(([suffix]) => lowerPath.endsWith(suffix))?.[1] ?? 'text'
+}
+
+export const omittedBinaryContentPlaceholder = (filePath: string): string => {
+   const fileName = filePath.replaceAll('\\', '/').split('/').at(-1) ?? filePath
+   return `[Binary file: ${escapeDisplayedPath(fileName)} - content omitted]`
 }
 
 export const createSafeFence = (content: string): string => {
@@ -165,12 +172,15 @@ const readWorkingTreeContent = async (
          return { kind: 'content', content: await readlink(absolutePath), language: 'text' }
       }
       if (!metadata.isFile()) return { kind: 'placeholder', content: '[FILE UNREADABLE]' }
+      if (isOmittedBinaryContentPath(change.path)) {
+         return { kind: 'placeholder', content: omittedBinaryContentPlaceholder(change.path) }
+      }
 
       const contents = await readBoundedFile(absolutePath, maxFileBytes, signal)
       if (typeof contents === 'string') return { kind: 'placeholder', content: contents }
       const decoded = decodeTextFile(contents)
       return decoded === undefined
-         ? { kind: 'placeholder', content: '[BINARY FILE OMITTED]' }
+         ? { kind: 'placeholder', content: omittedBinaryContentPlaceholder(change.path) }
          : { kind: 'content', content: decoded, language: detectFenceLanguage(change.path) }
    } catch (error) {
       if (error instanceof ClipboardInterruptedError) throw error
