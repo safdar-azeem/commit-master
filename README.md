@@ -40,6 +40,9 @@ gitspan <duration> <commits-per-day>
 gitpaths
 gitbundle
 filebundle
+filebundle --output
+filebundle --output file
+filebundle --output text
 gitbundle ./frontend ./api
 gitbundle --all [workspace-path]
 gitbundle --save <name> ./frontend ./api
@@ -188,7 +191,7 @@ After success, `gitbundle` prints `8 changed files bundled and copied.` using th
 
 ## Bundle Any Folder Without Git
 
-Use `filebundle` to copy a Markdown representation of every eligible filesystem file below the current directory:
+Use `filebundle` to bundle every eligible filesystem file below the current directory:
 
 ```bash
 cd ~/Documents/project-files
@@ -213,7 +216,24 @@ export const example = true
 ```
 ````
 
-It uses the same content redaction, document extraction, binary placeholders, symlink handling, and size limits as `gitbundle`, while applying only Commit Master's built-in bundle exclusions. A `.gitignore` file is treated as an ordinary file and is not interpreted. After success, it prints `8 files bundled and copied.`
+By default, `filebundle` creates a `.md` file and copies that file itself to the clipboard for pasting as a file where the operating system and destination application support it. Generated files are kept outside the source project under `$XDG_CACHE_HOME/commit-master/filebundles` (or `~/.cache/commit-master/filebundles`) on macOS/Linux, and `%LOCALAPPDATA%\commit-master\filebundles` on Windows. If that location falls inside the selected folder, Commit Master uses a user-specific temporary cache outside it. A successful run prints the bundled file count and generated filename.
+
+To copy the Markdown text directly instead, set the global output preference:
+
+```bash
+filebundle --output text
+```
+
+To return to file output or check the effective setting:
+
+```bash
+filebundle --output file
+filebundle --output
+```
+
+The preference applies across terminals, folders, and projects. It is stored in `settings.json` beside Commit Master's existing user configuration, not in a repository. If it has never been set, `file` is the default. The `--output` commands only read or update this setting; they do not scan files or use the clipboard.
+
+Both output modes use the same content redaction, document extraction, binary placeholders, symlink handling, and size limits as `gitbundle`, while applying only Commit Master's built-in bundle exclusions. A `.gitignore` file is treated as an ordinary file and is not interpreted. In text mode, success prints `8 files bundled and copied.`
 
 ### Bundle Multiple Repositories
 
