@@ -13,7 +13,7 @@ import {
    unlink,
    writeFile,
 } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
 import { PassThrough } from 'node:stream'
@@ -64,7 +64,9 @@ import {
    resolveExplicitRepositories,
    saveWorkspace,
 } from '../dist/CommitMasterWorkspaces.js'
-import { copyToClipboard } from '../dist/CommitMasterClipboard.js'
+import { copyFileToClipboard, copyToClipboard } from '../dist/CommitMasterClipboard.js'
+import { writeFilebundleMarkdown } from '../dist/CommitMasterFilebundleStorage.js'
+import { readFilebundleOutput, saveFilebundleOutput } from '../dist/CommitMasterSettings.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
 import { confirmGitInitialization, parseConfirmationAnswer } from '../dist/CommitMasterPrompt.js'
@@ -234,6 +236,113 @@ describe('package command names', () => {
 })
 
 describe('filebundle', () => {
+   it('defaults to file output and preserves unrelated global settings', async () => {
+      const configDirectory = await createProject()
+      assert.equal(await readFilebundleOutput(configDirectory), 'file')
+      await assert.rejects(access(join(configDirectory, 'settings.json')))
+      await writeFile(join(configDirectory, 'settings.json'), '{"other":{"enabled":true}}\n')
+      await saveFilebundleOutput('text', configDirectory)
+      assert.equal(await readFilebundleOutput(configDirectory), 'text')
+      await saveFilebundleOutput('file', configDirectory)
+      assert.equal(await readFilebundleOutput(configDirectory), 'file')
+      const settings = JSON.parse(await readFile(join(configDirectory, 'settings.json'), 'utf8'))
+      assert.deepEqual(settings.other, { enabled: true })
+      assert.deepEqual(settings.filebundle, { output: 'file' })
+   })
+
+   it('rejects malformed or unsupported global output settings', async () => {
+      const configDirectory = await createProject()
+      await writeFile(join(configDirectory, 'settings.json'), '{invalid')
+      await assert.rejects(readFilebundleOutput(configDirectory), /settings are invalid/)
+      await writeFile(join(configDirectory, 'settings.json'), '{"filebundle":{"output":"markdown"}}')
+      await assert.rejects(readFilebundleOutput(configDirectory), /settings are invalid/)
+   })
+
+   it('sets and reads output globally from different folders without bundling', async () => {
+      const first = await createProject()
+      const second = await createProject()
+      const configRoot = await createProject()
+      const environment = process.platform === 'win32'
+         ? { APPDATA: configRoot }
+         : { XDG_CONFIG_HOME: configRoot }
+      const settingsFile = join(configRoot, 'commit-master', 'settings.json')
+
+      assert.match(runCli(first, 'filebundle', ['--output'], environment).stdout, /filebundle output: file/)
+      await assert.rejects(access(settingsFile))
+      assert.match(runCli(first, 'filebundle', ['--output', 'text'], environment).stdout, /output set to text/)
+      assert.match(runCli(second, 'filebundle', ['--output'], environment).stdout, /filebundle output: text/)
+      assert.match(runCli(second, 'filebundle', ['--output', 'file'], environment).stdout, /output set to file/)
+      assert.match(runCli(first, 'filebundle', ['--output'], environment).stdout, /filebundle output: file/)
+      await assert.rejects(access(join(first, '.git')))
+      await assert.rejects(access(join(second, '.git')))
+   })
+
+   it(
+      'keeps preference commands independent of scanning, Git, and clipboard providers',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         const configRoot = await createProject()
+         const wrapperDirectory = await createProject()
+         await writeRepositoryFile(folder, 'note.md', '# Should not be bundled\n')
+         for (const provider of ['git', 'pbcopy', 'osascript', 'wl-copy', 'xclip']) {
+            const wrapper = join(wrapperDirectory, provider)
+            await writeFile(wrapper, '#!/bin/sh\nprintf invoked > "$0.called"\nexit 42\n')
+            await chmod(wrapper, 0o755)
+         }
+         const environment = { XDG_CONFIG_HOME: configRoot, PATH: wrapperDirectory }
+         assert.equal(runCli(folder, 'filebundle', ['--output'], environment).status, 0)
+         assert.equal(runCli(folder, 'filebundle', ['--output', 'text'], environment).status, 0)
+         for (const provider of ['git', 'pbcopy', 'osascript', 'wl-copy', 'xclip']) {
+            await assert.rejects(access(join(wrapperDirectory, `${provider}.called`)))
+         }
+      }
+   )
+
+   it(
+      'uses the saved text preference from another working directory',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const first = await createProject()
+         const second = await createProject()
+         const configRoot = await createProject()
+         const wrapperDirectory = await createProject()
+         await writeRepositoryFile(second, 'note.md', '# Text output\n')
+         const wrapper = join(wrapperDirectory, 'pbcopy')
+         await writeFile(wrapper, '#!/bin/sh\ncat >/dev/null\n', 'utf8')
+         await chmod(wrapper, 0o755)
+         if (process.platform !== 'darwin') {
+            await writeFile(join(wrapperDirectory, 'wl-copy'), '#!/bin/sh\ncat >/dev/null\n', 'utf8')
+            await chmod(join(wrapperDirectory, 'wl-copy'), 0o755)
+         }
+         const environment = {
+            XDG_CONFIG_HOME: configRoot,
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+         }
+         assert.equal(runCli(first, 'filebundle', ['--output', 'text'], environment).status, 0)
+         const result = runCli(second, 'filebundle', [], environment)
+         assert.equal(result.status, 0)
+         assert.match(result.stdout, /1 files bundled and copied\./)
+      }
+   )
+
+   it('rejects unsupported output values and extra arguments', async () => {
+      const folder = await createProject()
+      const configRoot = await createProject()
+      const environment = process.platform === 'win32'
+         ? { APPDATA: configRoot }
+         : { XDG_CONFIG_HOME: configRoot }
+      for (const args of [
+         ['.'], ['./src'], ['--all'], ['--save', 'test'],
+         ['--output', 'markdown'], ['--output', 'clipboard'], ['--output', 'file', 'extra'],
+      ]) {
+         const result = runCli(folder, 'filebundle', args, environment)
+         assert.equal(result.status, 1)
+         assert.match(result.stderr, /Invalid filebundle arguments/)
+      }
+      await assert.rejects(access(join(configRoot, 'commit-master', 'settings.json')))
+   })
+
    it('collects a non-Git folder recursively with shared exclusions and deterministic paths', async () => {
       const folder = await createProject()
       await writeRepositoryFile(folder, 'src/z.ts', 'export const z = true\n')
@@ -269,8 +378,10 @@ describe('filebundle', () => {
       const folder = await createProject()
       await writeRepositoryFile(folder, 'node_modules/package/hidden.ts', 'hidden\n')
       let copied = false
-      await runFilebundleCommand(folder, undefined, async () => {
-         copied = true
+      await runFilebundleCommand(folder, undefined, {
+         output: 'file',
+         writeFileClipboard: async () => { copied = true },
+         writeMarkdownFile: async () => { copied = true; return 'should-not-exist.md' },
       })
       assert.equal(copied, false)
    })
@@ -353,8 +464,10 @@ describe('filebundle', () => {
       }
       let copied = false
       await assert.rejects(
-         runFilebundleCommand(folder, undefined, async () => {
-            copied = true
+         runFilebundleCommand(folder, undefined, {
+            output: 'file',
+            writeFileClipboard: async () => { copied = true },
+            writeMarkdownFile: async () => { copied = true; return 'should-not-exist.md' },
          }),
          /Markdown bundle exceeds the 10 MiB safety limit/
       )
@@ -364,7 +477,7 @@ describe('filebundle', () => {
    it('rejects arguments before attempting any folder or Git operation', async () => {
       await assert.rejects(
          runCommand('filebundle', ['not-supported'], new InterruptionController()),
-         /filebundle does not accept arguments/
+         /Invalid filebundle arguments/
       )
    })
 
@@ -372,10 +485,142 @@ describe('filebundle', () => {
       const repository = await createRepository()
       await createBaselineCommit(repository, { 'unchanged.ts': 'export const unchanged = true\n' })
       let copied = ''
-      await runFilebundleCommand(repository, undefined, async (content) => {
-         copied = content
+      await runFilebundleCommand(repository, undefined, {
+         output: 'text',
+         writeText: async (content) => { copied = content },
       })
       assert.match(copied, /### \[FILE\] unchanged\.ts/)
+   })
+
+   it('copies Markdown text in text mode without creating a bundle file', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'note.md', '# Review\n')
+      const { root, files } = await collectEligibleDirectoryFiles(folder)
+      const expected = await createFolderMarkdownBundle(root, files)
+      let copied = ''
+      await runFilebundleCommand(folder, undefined, {
+         output: 'text',
+         writeText: async (content) => { copied = content },
+         writeMarkdownFile: async () => { throw new Error('file writing must not occur') },
+         writeFileClipboard: async () => { throw new Error('file clipboard must not occur') },
+      })
+      assert.equal(copied, expected)
+   })
+
+   it('writes the exact Markdown outside the project and passes the file to file clipboard delivery', async () => {
+      const folder = await createProject()
+      const storage = await createProject()
+      await writeRepositoryFile(folder, 'note.md', '# Review\n')
+      const { root, files } = await collectEligibleDirectoryFiles(folder)
+      const expected = await createFolderMarkdownBundle(root, files)
+      let copiedFile = ''
+      await runFilebundleCommand(folder, undefined, {
+         output: 'file',
+         writeText: async () => { throw new Error('text clipboard must not occur') },
+         writeMarkdownFile: (selectedRoot, content, signal) =>
+            writeFilebundleMarkdown(selectedRoot, content, signal, storage),
+         writeFileClipboard: async (filePath) => { copiedFile = filePath },
+      })
+      assert.equal(relative(storage, copiedFile).startsWith('..'), false)
+      assert.equal(relative(folder, copiedFile).startsWith('..'), true)
+      assert.match(basename(copiedFile), /^filebundle-[a-z0-9-]+-\d{8}-\d{6}-[a-f0-9]{8}\.md$/)
+      assert.equal(await readFile(copiedFile, 'utf8'), expected)
+   })
+
+   it('uses a safe fallback filename when the folder name cannot be sanitized', async () => {
+      const storage = await createProject()
+      const selected = join(storage, '文档')
+      await mkdir(selected)
+      const generated = await writeFilebundleMarkdown(selected, '# Bundle\n', undefined, storage)
+      assert.match(basename(generated), /^filebundle-\d{8}-\d{6}-[a-f0-9]{8}\.md$/)
+      assert.equal(await readFile(generated, 'utf8'), '# Bundle\n')
+   })
+
+   it(
+      'does not write through a cache symlink into the selected folder',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         const cacheParent = await createProject()
+         const inside = join(folder, 'generated-cache')
+         const apparentCache = join(cacheParent, 'redirected-cache')
+         await mkdir(inside)
+         await symlink(inside, apparentCache, 'dir')
+
+         const generated = await writeFilebundleMarkdown(folder, '# Bundle\n', undefined, apparentCache)
+         assert.equal(relative(folder, await realpath(generated)).startsWith('..'), true)
+         await assert.rejects(access(join(inside, basename(generated))))
+         await unlink(generated)
+      }
+   )
+
+   it('does not call either clipboard writer when file writing fails', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'note.md', '# Review\n')
+      let copied = false
+      await assert.rejects(runFilebundleCommand(folder, undefined, {
+         output: 'file',
+         writeMarkdownFile: async () => { throw new Error('disk full') },
+         writeText: async () => { copied = true },
+         writeFileClipboard: async () => { copied = true },
+      }), /disk full/)
+      assert.equal(copied, false)
+   })
+
+   it('reports a saved file path when file clipboard delivery fails', async () => {
+      const folder = await createProject()
+      const storage = await createProject()
+      await writeRepositoryFile(folder, 'note.md', '# Review\n')
+      let saved = ''
+      await assert.rejects(runFilebundleCommand(folder, undefined, {
+         output: 'file',
+         writeMarkdownFile: async (root, content, signal) => {
+            saved = await writeFilebundleMarkdown(root, content, signal, storage)
+            return saved
+         },
+         writeFileClipboard: async () => { throw new Error('clipboard unavailable') },
+      }), (error: unknown) => {
+         assert.match((error as Error).message, /could not be copied to the clipboard/)
+         assert.ok((error as Error).message.includes(saved))
+         return true
+      })
+      assert.match(await readFile(saved, 'utf8'), /### \[FILE\] note\.md/)
+   })
+
+   it('uses file clipboard types and rejects unsupported file providers without text fallback', async () => {
+      const attempts: Array<{ command: string; args: readonly string[]; content: string }> = []
+      await copyFileToClipboard('/tmp/folder with space/文档.md', undefined, 'linux', async (program, content) => {
+         attempts.push({ command: program.command, args: program.args, content })
+         return program.command === 'xclip'
+      })
+      assert.deepEqual(attempts.map((attempt) => attempt.command), ['wl-copy', 'xclip'])
+      assert.ok(attempts.every((attempt) => attempt.args.includes('text/uri-list')))
+      assert.ok(attempts.every((attempt) => attempt.content.startsWith('file://')))
+      assert.ok(attempts.every((attempt) => attempt.content.includes('%20')))
+
+      const mac: Array<{ args: readonly string[]; content: string }> = []
+      await copyFileToClipboard('/tmp/file with spaces.md', undefined, 'darwin', async (program, content) => {
+         mac.push({ args: program.args, content })
+         return true
+      })
+      assert.equal(mac[0]?.args.at(-1), '/tmp/file with spaces.md')
+      assert.equal(mac[0]?.content, '')
+
+      const windows: Array<{ args: readonly string[]; content: string }> = []
+      const unicodeWindowsPath = 'C:\\Users\\Safdar\\文档\\résumé.md'
+      await copyFileToClipboard(unicodeWindowsPath, undefined, 'win32', async (program, content) => {
+         windows.push({ args: program.args, content })
+         return true
+      })
+      assert.ok(windows[0]?.args.includes('-STA'))
+      assert.ok(windows[0]?.args.some((argument) => argument.includes('[Console]::InputEncoding=[Text.Encoding]::UTF8')))
+      assert.equal(windows[0]?.content, unicodeWindowsPath)
+      assert.ok(windows[0]?.args.every((argument) => !argument.includes(unicodeWindowsPath)))
+
+      await assert.rejects(
+         copyFileToClipboard('/tmp/example.md', undefined, 'freebsd', async () => true),
+         /File clipboard copying is not supported/
+      )
    })
 
    it(
@@ -386,16 +631,21 @@ describe('filebundle', () => {
          await writeRepositoryFile(folder, 'note.txt', 'non-git folder\n')
          const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-filebundle-wrapper-'))
          temporaryPaths.add(wrapperDirectory)
-         const provider = process.platform === 'darwin' ? 'pbcopy' : 'wl-copy'
+         const provider = process.platform === 'darwin' ? 'osascript' : 'wl-copy'
          const wrapper = join(wrapperDirectory, provider)
          await writeFile(wrapper, '#!/bin/sh\ncat >/dev/null\n', 'utf8')
          await chmod(wrapper, 0o755)
 
+         const configRoot = await createProject()
+         const cacheRoot = await createProject()
+
          const result = runCli(folder, 'filebundle', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            ...(process.platform === 'win32' ? {} : { XDG_CONFIG_HOME: configRoot, XDG_CACHE_HOME: cacheRoot }),
          })
          assert.equal(result.status, 0)
-         assert.match(result.stdout, /1 files bundled and copied\./)
+         assert.match(result.stdout, /1 files bundled\./)
+         assert.match(result.stdout, /Markdown file copied to clipboard: .*\.md/)
          assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Git is not initialized/)
          await assert.rejects(access(join(folder, '.git')))
       }
@@ -409,18 +659,24 @@ describe('filebundle', () => {
          await writeRepositoryFile(folder, 'note.txt', 'cancel me\n')
          const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-filebundle-cancel-'))
          temporaryPaths.add(wrapperDirectory)
-         const provider = process.platform === 'darwin' ? 'pbcopy' : 'wl-copy'
+         const provider = process.platform === 'darwin' ? 'osascript' : 'wl-copy'
          const wrapper = join(wrapperDirectory, provider)
          await writeFile(wrapper, '#!/bin/sh\nkill -INT "$PPID"\nexit 130\n', 'utf8')
          await chmod(wrapper, 0o755)
 
+         const configRoot = await createProject()
+         const cacheRoot = await createProject()
+
          const result = runCli(folder, 'filebundle', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            ...(process.platform === 'win32' ? {} : { XDG_CONFIG_HOME: configRoot, XDG_CACHE_HOME: cacheRoot }),
          })
          assert.equal(result.status, 130)
          assert.match(result.stderr, /Copy cancelled\./)
          assert.match(result.stderr, /The clipboard was not updated\./)
          assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /files bundled and copied/i)
+         assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /\d+ files bundled\./)
+         assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Markdown file copied to clipboard:/)
       }
    )
 })
