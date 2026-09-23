@@ -24,8 +24,12 @@ function run(argv) {
    const pasteboard = $.NSPasteboard.generalPasteboard
    pasteboard.clearContents
    const fileURL = $.NSURL.fileURLWithPath(argv[0])
-   if (!pasteboard.writeObjects([fileURL.js])) {
-      throw new Error('Unable to copy file to clipboard')
+   pasteboard.writeObjects([ObjC.unwrap(fileURL)])
+   const itemCount = pasteboard.pasteboardItems.count * 1
+   const copiedFileURL = pasteboard.stringForType($.NSPasteboardTypeFileURL)
+   if (itemCount < 1 || !copiedFileURL ||
+       ObjC.unwrap(copiedFileURL) !== ObjC.unwrap(fileURL.absoluteString)) {
+      throw new Error('Unable to copy file to macOS clipboard')
    }
 }`
 
