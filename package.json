@@ -8,6 +8,7 @@
     "gitspan": "dist/CommitMasterCommitspan.js",
     "gitpaths": "dist/CommitMasterGitpaths.js",
     "gitbundle": "dist/CommitMasterGitbundle.js",
+    "filebundle": "dist/CommitMasterFilebundle.js",
     "gitstash": "dist/CommitMasterGitstash.js",
     "autocommit": "dist/CommitMasterAutocommit.js",
     "commitspan": "dist/CommitMasterCommitspan.js"
