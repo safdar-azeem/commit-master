@@ -65,6 +65,7 @@ import {
    saveWorkspace,
 } from '../dist/CommitMasterWorkspaces.js'
 import { copyFileToClipboard, copyToClipboard } from '../dist/CommitMasterClipboard.js'
+import { resolveLinuxClipboardHelper } from '../dist/CommitMasterLinuxClipboardHelper.js'
 import { writeFilebundleMarkdown } from '../dist/CommitMasterFilebundleStorage.js'
 import { readFilebundleOutput, saveFilebundleOutput } from '../dist/CommitMasterSettings.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
@@ -587,45 +588,132 @@ describe('filebundle', () => {
       assert.match(await readFile(saved, 'utf8'), /### \[FILE\] note\.md/)
    })
 
-   it('uses file clipboard types and rejects unsupported file providers without text fallback', async () => {
+   it('uses an AppKit file URL on the macOS pasteboard without interpolating the path', async () => {
+      const filePath = '/Users/Safdar/My Project/文档/résumé bundle.md'
       const attempts: Array<{ command: string; args: readonly string[]; content: string }> = []
-      await copyFileToClipboard('/tmp/folder with space/文档.md', undefined, 'linux', async (program, content) => {
+      await copyFileToClipboard(filePath, undefined, 'darwin', async (program, content) => {
          attempts.push({ command: program.command, args: program.args, content })
-         return program.command === 'xclip'
-      })
-      assert.deepEqual(attempts.map((attempt) => attempt.command), ['wl-copy', 'xclip'])
-      assert.ok(attempts.every((attempt) => attempt.args.includes('text/uri-list')))
-      assert.ok(attempts.every((attempt) => attempt.content.startsWith('file://')))
-      assert.ok(attempts.every((attempt) => attempt.content.includes('%20')))
-
-      const mac: Array<{ args: readonly string[]; content: string }> = []
-      await copyFileToClipboard('/tmp/file with spaces.md', undefined, 'darwin', async (program, content) => {
-         mac.push({ args: program.args, content })
          return true
       })
-      assert.equal(mac[0]?.args.at(-1), '/tmp/file with spaces.md')
-      assert.equal(mac[0]?.content, '')
+      assert.equal(attempts.length, 1)
+      assert.equal(attempts[0]?.command, 'osascript')
+      assert.deepEqual(attempts[0]?.args.slice(0, 3), ['-l', 'JavaScript', '-e'])
+      const script = attempts[0]?.args[3] ?? ''
+      assert.match(script, /ObjC\.import\('AppKit'\)/)
+      assert.match(script, /NSPasteboard\.generalPasteboard/)
+      assert.match(script, /pasteboard\.clearContents\b/)
+      assert.doesNotMatch(script, /clearContents\s*\(/)
+      assert.match(script, /NSURL\.fileURLWithPath\(argv\[0\]\)/)
+      assert.match(script, /pasteboard\.writeObjects\(\[fileURL\.js\]\)/)
+      assert.doesNotMatch(script, /as alias|résumé bundle|My Project/)
+      assert.equal(attempts[0]?.args.at(-1), filePath)
+      assert.equal(attempts[0]?.content, '')
+   })
 
-      const windows: Array<{ args: readonly string[]; content: string }> = []
-      const unicodeWindowsPath = 'C:\\Users\\Safdar\\文档\\résumé.md'
-      await copyFileToClipboard(unicodeWindowsPath, undefined, 'win32', async (program, content) => {
-         windows.push({ args: program.args, content })
+   it('keeps Windows file-drop paths Unicode-safe and separate from PowerShell source', async () => {
+      const filePath = 'C:\\Users\\Safdar\\文档\\résumé bundle.md'
+      const attempts: Array<{ command: string; args: readonly string[]; content: string }> = []
+      await copyFileToClipboard(filePath, undefined, 'win32', async (program, content) => {
+         attempts.push({ command: program.command, args: program.args, content })
          return true
       })
-      assert.ok(windows[0]?.args.includes('-STA'))
-      assert.ok(windows[0]?.args.some((argument) => argument.includes('[Console]::InputEncoding=[Text.Encoding]::UTF8')))
-      assert.equal(windows[0]?.content, unicodeWindowsPath)
-      assert.ok(windows[0]?.args.every((argument) => !argument.includes(unicodeWindowsPath)))
+      assert.equal(attempts[0]?.command, 'powershell.exe')
+      assert.ok(attempts[0]?.args.includes('-STA'))
+      const script = attempts[0]?.args.at(-1) ?? ''
+      assert.match(script, /SetFileDropList/)
+      assert.match(script, /\[Console\]::InputEncoding=\[Text\.Encoding\]::UTF8/)
+      assert.doesNotMatch(script, /résumé bundle/)
+      assert.equal(attempts[0]?.content, filePath)
+   })
 
+   it('resolves only the matching packaged Linux helper', () => {
+      const seen: string[] = []
+      const resolve = (specifier: string): string => {
+         seen.push(specifier)
+         return `/installed/${specifier}`
+      }
+      assert.match(resolveLinuxClipboardHelper('linux', 'x64', resolve), /clipboard-linux-x64/)
+      assert.match(resolveLinuxClipboardHelper('linux', 'arm64', resolve), /clipboard-linux-arm64/)
+      assert.deepEqual(seen, [
+         'commit-master-clipboard-linux-x64/bin/commit-master-file-clipboard',
+         'commit-master-clipboard-linux-arm64/bin/commit-master-file-clipboard',
+      ])
+      assert.throws(() => resolveLinuxClipboardHelper('linux', 'arm', resolve), /Unsupported Linux architecture.*arm/)
+      assert.throws(() => resolveLinuxClipboardHelper('linux', 'x64', () => { throw new Error('missing') }), /missing.*Reinstall commit-master/i)
+   })
+
+   it('declares matching optional Linux binary packages with platform metadata', async () => {
+      const repository = join(dirname(fileURLToPath(import.meta.url)), '..')
+      const main = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8'))
+      for (const arch of ['x64', 'arm64']) {
+         const pkg = JSON.parse(await readFile(join(repository, 'packages', `clipboard-linux-${arch}`, 'package.json'), 'utf8'))
+         assert.deepEqual(pkg.os, ['linux'])
+         assert.deepEqual(pkg.cpu, [arch])
+         assert.equal(main.optionalDependencies[pkg.name], pkg.version)
+         assert.ok(pkg.files.includes('bin/commit-master-file-clipboard'))
+      }
+   })
+
+   it('installs release test dependencies before helper publication without resolving new optional packages', async () => {
+      const repository = join(dirname(fileURLToPath(import.meta.url)), '..')
+      const workflow = await readFile(join(repository, '.github', 'workflows', 'release-npm.yml'), 'utf8')
+      const remove = workflow.indexOf('npm pkg delete optionalDependencies')
+      const install = workflow.indexOf('npm install --ignore-scripts --package-lock=false')
+      const restore = workflow.indexOf('cp "$release_manifest_backup" package.json', install)
+      const test = workflow.indexOf('npm test', restore)
+      const publishHelper = workflow.indexOf('node scripts/publish-release-package.mjs ./packages/clipboard-linux-x64', test)
+      const publishSecondHelper = workflow.indexOf('node scripts/publish-release-package.mjs ./packages/clipboard-linux-arm64', publishHelper)
+      const publishMain = workflow.indexOf('run: node scripts/publish-release-package.mjs .\n', publishSecondHelper)
+      assert.ok(remove >= 0 && remove < install)
+      assert.ok(install < restore && restore < test)
+      assert.ok(test < publishHelper && publishHelper < publishSecondHelper && publishSecondHelper < publishMain)
+   })
+
+   it('uses the packaged helper first for Wayland and X11 without PATH providers', async () => {
+      const filePath = '/home/user/My Project/文档/résumé #1?.md'
+      const cases = [
+         { XDG_CURRENT_DESKTOP: 'GNOME', XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' },
+         { XDG_CURRENT_DESKTOP: 'Cinnamon', XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' },
+         { XDG_CURRENT_DESKTOP: 'KDE', XDG_SESSION_TYPE: 'wayland', WAYLAND_DISPLAY: 'wayland-0' },
+         { XDG_CURRENT_DESKTOP: 'Pantheon', XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' },
+         { XDG_CURRENT_DESKTOP: 'unknown', DISPLAY: ':0' },
+      ]
+      for (const environment of cases) {
+         const attempts: Array<{ command: string; args: readonly string[]; content: string }> = []
+         await copyFileToClipboard(filePath, undefined, 'linux', async (program, content) => {
+            attempts.push({ command: program.command, args: program.args, content })
+            return true
+         }, { ...environment, PATH: '' }, 'x64', () => '/installed/helper')
+         assert.equal(attempts.length, 1)
+         assert.equal(attempts[0]?.command, '/installed/helper')
+         assert.deepEqual(attempts[0]?.args, [filePath])
+         assert.equal(attempts[0]?.content, '')
+      }
+   })
+
+   it('reports packaged helper failures and headless sessions without claiming success', async () => {
+      let attempts = 0
+      await assert.rejects(copyFileToClipboard('/tmp/file.md', undefined, 'linux', async () => {
+         attempts += 1
+         return false
+      }, { DISPLAY: ':0', PATH: '' }, 'x64', () => '/installed/helper'), /bundled Linux file clipboard helper could not copy/)
+      assert.equal(attempts, 1)
+      await assert.rejects(copyFileToClipboard('/tmp/file.md', undefined, 'linux', async () => true,
+         { PATH: '' }, 'x64', () => '/installed/helper'), /No graphical Linux clipboard session/)
+      await assert.rejects(copyFileToClipboard('/tmp/file.md', undefined, 'linux', async () => true,
+         { DISPLAY: ':0' }, 'arm'), /Unsupported Linux architecture.*arm/)
+      await assert.rejects(copyFileToClipboard('/tmp/file.md', undefined, 'linux', async () => true,
+         { DISPLAY: ':0' }, 'x64', (platform, arch) => resolveLinuxClipboardHelper(platform, arch,
+            () => { throw new Error('optional package missing') })), /missing.*Reinstall commit-master/i)
       await assert.rejects(
-         copyFileToClipboard('/tmp/example.md', undefined, 'freebsd', async () => true),
+         copyFileToClipboard('/tmp/file.md', undefined, 'freebsd', async () => true),
          /File clipboard copying is not supported/
       )
    })
 
    it(
       'runs through the CLI in a non-Git folder without initializing Git',
-      { skip: process.platform === 'win32' },
+      { skip: process.platform !== 'darwin' },
       async () => {
          const folder = await createProject()
          await writeRepositoryFile(folder, 'note.txt', 'non-git folder\n')
@@ -641,6 +729,8 @@ describe('filebundle', () => {
 
          const result = runCli(folder, 'filebundle', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            XDG_SESSION_TYPE: 'wayland',
+            WAYLAND_DISPLAY: 'filebundle-test-wayland',
             ...(process.platform === 'win32' ? {} : { XDG_CONFIG_HOME: configRoot, XDG_CACHE_HOME: cacheRoot }),
          })
          assert.equal(result.status, 0)
@@ -653,7 +743,7 @@ describe('filebundle', () => {
 
    it(
       'uses clipboard cancellation output without reporting filebundle success',
-      { skip: process.platform === 'win32' },
+      { skip: process.platform !== 'darwin' },
       async () => {
          const folder = await createProject()
          await writeRepositoryFile(folder, 'note.txt', 'cancel me\n')
@@ -669,6 +759,8 @@ describe('filebundle', () => {
 
          const result = runCli(folder, 'filebundle', [], {
             PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+            XDG_SESSION_TYPE: 'wayland',
+            WAYLAND_DISPLAY: 'filebundle-test-wayland',
             ...(process.platform === 'win32' ? {} : { XDG_CONFIG_HOME: configRoot, XDG_CACHE_HOME: cacheRoot }),
          })
          assert.equal(result.status, 130)
