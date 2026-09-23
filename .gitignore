@@ -1,6 +1,9 @@
 node_modules/
 dist/
 test-dist/
+native/linux-file-clipboard/target/
+packages/clipboard-linux-x64/bin/
+packages/clipboard-linux-arm64/bin/
 *.log
 .DS_Store
 DS_Store
