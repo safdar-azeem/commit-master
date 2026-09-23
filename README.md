@@ -22,7 +22,7 @@ Or with pnpm:
 pnpm add --global commit-master
 ```
 
-One global installation exposes all five commands: `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, and `gitstash`. Node.js 18.18 or newer and Git are required; no package manager is required at runtime.
+One global installation exposes six primary commands: `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, `filebundle`, and `gitstash`. Node.js 18.18 or newer is required. Git is required for Git-specific Commit Master commands; `filebundle` itself does not require Git. No package manager is required at runtime.
 
 ## How to Use
 
@@ -39,6 +39,7 @@ gitauto
 gitspan <duration> <commits-per-day>
 gitpaths
 gitbundle
+filebundle
 gitbundle ./frontend ./api
 gitbundle --all [workspace-path]
 gitbundle --save <name> ./frontend ./api
@@ -48,7 +49,7 @@ gitbundle --delete <name>
 gitstash ["stash title"]
 ```
 
-The commands work with the Git repository of the currently opened project.
+The Git commands work with the repository of the currently opened project. `filebundle` works with the current folder, whether or not it is a Git repository.
 
 ## Automatic Git Initialization
 
@@ -63,7 +64,7 @@ Press Enter or answer Yes to initialize Git in the current directory and continu
 
 CI, redirected input, and other non-interactive environments never initialize Git or wait for input. They ask you to initialize Git before running Commit Master. Git identity is never created or changed automatically.
 
-This initialization flow applies to the normal current-repository commands. `gitbundle` workspace discovery and explicit repository paths never initialize a directory; they only use Git repositories that already exist. After confirmation, the original command continues automatically in the newly initialized repository.
+This initialization flow applies to the normal current-repository commands. `gitbundle` workspace discovery and explicit repository paths never initialize a directory; they only use Git repositories that already exist. `filebundle` never checks for, initializes, or uses Git. After confirmation, the original command continues automatically in the newly initialized repository.
 
 ## Automatic File Commits
 
@@ -185,6 +186,35 @@ Commit Master never silently truncates file content. Individual textual files ar
 
 After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count of files represented in the bundle, including omitted-content assets.
 
+## Bundle Any Folder Without Git
+
+Use `filebundle` to copy a Markdown representation of every eligible filesystem file below the current directory:
+
+```bash
+cd ~/Documents/project-files
+filebundle
+```
+
+Unlike `gitbundle`, which bundles eligible Git changes, `filebundle` recursively bundles eligible files from the selected folder itself. It does not require Git, does not inspect Git status, and does not initialize a repository. File headings use `[FILE]` because filesystem traversal has no Git change status:
+
+````markdown
+Folder: /Users/example/Documents/project-files
+
+### [FILE] README.md
+
+```markdown
+# Project files
+```
+
+### [FILE] src/index.ts
+
+```ts
+export const example = true
+```
+````
+
+It uses the same content redaction, document extraction, binary placeholders, symlink handling, and size limits as `gitbundle`, while applying only Commit Master's built-in bundle exclusions. A `.gitignore` file is treated as an ordinary file and is not interpreted. After success, it prints `8 files bundled and copied.`
+
 ### Bundle Multiple Repositories
 
 The no-argument command remains the single-repository workflow shown above. To review several repositories together, pass their roots (or directories inside them) to `gitbundle`:
@@ -248,7 +278,7 @@ Workspace names use letters, numbers, hyphens, and underscores. If a saved repos
 
 ## Default Clipboard Ignore Rules
 
-Clipboard commands share generated-file, lockfile, and directory exclusions. Git's own ignore rules are respected first. Commit Master additionally excludes from both `gitpaths` and `gitbundle`:
+Clipboard commands share generated-file, lockfile, and directory exclusions. Git's own ignore rules are respected first for `gitpaths` and `gitbundle`. `filebundle` applies the same built-in bundle exclusions without consulting Git or `.gitignore`. Commit Master additionally excludes from both `gitpaths` and `gitbundle`, and from `filebundle` when bundling folders:
 
 - Exact names: `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `generated.ts`, `mongoose.gen.ts`, `resolvers.generated.ts`, `typeDefs.generated.ts`, `types.generated.ts`, `tsconfig.tsbuildinfo`, `tsconfig.node.tsbuildinfo`, and `.DS_Store`.
 - Generated patterns: `*.generated.ts` and `vite.config.ts.timestamp-*`.
@@ -347,6 +377,7 @@ The toolkit:
 - Automatically expands the date range further into the past when more days are required.
 - Copies absolute changed-file paths with `gitpaths`.
 - Creates complete Markdown change bundles with `gitbundle`.
+- Creates complete Markdown folder bundles with `filebundle`, without Git.
 - Saves staged, unstaged, and untracked project changes with `gitstash`.
 - Preserves existing commits and working-tree changes.
 - Stops commit creation safely when the repository contains pre-existing staged changes, conflicts, or an active Git operation; clipboard commands intentionally include staged changes.
@@ -387,6 +418,12 @@ Copy changed-file contents as a Markdown bundle:
 
 ```bash
 gitbundle
+```
+
+Copy all eligible files in the current folder as a Markdown bundle without Git:
+
+```bash
+filebundle
 ```
 
 Stash all project changes with the default title:
