@@ -2,6 +2,7 @@ import { commitChanges } from './CommitMasterCommitService.js'
 import { ensureGitRepository } from './CommitMasterBootstrap.js'
 import {
    runClipboardCommand,
+   runFilebundleCommand,
    runWorkspaceBundleCommand,
    type ClipboardCommandName,
 } from './CommitMasterClipboardCommands.js'
@@ -45,6 +46,7 @@ export const USAGE = `Usage:
   gitauto
   gitpaths
   gitbundle
+  filebundle
   gitbundle <repository-path> [...repository-path]
   gitbundle --all [workspace-path]
   gitbundle --save <name> <repository-path> [...repository-path]
@@ -59,6 +61,7 @@ Examples:
   gitauto
   gitpaths
   gitbundle
+  filebundle
   gitbundle ./app ./api
   gitbundle --all ./workspace
   gitbundle --all --save erp
@@ -192,6 +195,13 @@ export const runCommand = async (
    args: readonly string[],
    interruption: InterruptionController
 ): Promise<void> => {
+   if (command === 'filebundle') {
+      if (args.length !== 0) {
+         throw new CommitMasterError(`filebundle does not accept arguments.\n\n${USAGE}`)
+      }
+      await runFilebundleCommand(process.cwd(), interruption.signal)
+      return
+   }
    if (command === 'gitbundle') {
       await runGitbundle(args, process.cwd(), interruption)
       return
@@ -286,7 +296,8 @@ export const runCli = async (command: CommandName, args: readonly string[]): Pro
    try {
       await runCommand(command, args, interruption)
    } catch (caught) {
-      const clipboardCommand = command === 'gitpaths' || command === 'gitbundle'
+      const clipboardCommand =
+         command === 'gitpaths' || command === 'gitbundle' || command === 'filebundle'
       const stashCommand = command === 'gitstash'
       const error = interruption.isInterrupted()
          ? clipboardCommand
