@@ -1,4 +1,4 @@
-import { copyToClipboard } from './CommitMasterClipboard.js'
+import { copyFileToClipboard, copyToClipboard } from './CommitMasterClipboard.js'
 import path from 'node:path'
 import {
    createCombinedMarkdownBundle,
@@ -12,12 +12,21 @@ import {
 } from './CommitMasterChangedFiles.js'
 import { collectEligibleDirectoryFiles } from './CommitMasterDirectoryFiles.js'
 import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
+import { writeFilebundleMarkdown } from './CommitMasterFilebundleStorage.js'
 import { resolveRepositoryRoot } from './CommitMasterRepository.js'
+import { readFilebundleOutput, type FilebundleOutput } from './CommitMasterSettings.js'
 
 export type ClipboardCommandName = 'gitpaths' | 'gitbundle' | 'filebundle'
 export type GitClipboardCommandName = Exclude<ClipboardCommandName, 'filebundle'>
 export type ClipboardWriter = (content: string, signal?: AbortSignal) => Promise<void>
 export type BundleCreator = typeof createMarkdownBundle
+
+export interface FilebundleDelivery {
+   output?: FilebundleOutput
+   writeText?: ClipboardWriter
+   writeFileClipboard?: (filePath: string, signal?: AbortSignal) => Promise<void>
+   writeMarkdownFile?: (root: string, content: string, signal?: AbortSignal) => Promise<string>
+}
 
 export const clipboardSuccessMessage = (
    command: ClipboardCommandName,
@@ -36,8 +45,10 @@ const throwIfCopyCancelled = (signal?: AbortSignal): void => {
 export const runFilebundleCommand = async (
    cwd: string,
    signal?: AbortSignal,
-   writeClipboard: ClipboardWriter = copyToClipboard
+   delivery: FilebundleDelivery = {}
 ): Promise<void> => {
+   throwIfCopyCancelled(signal)
+   const output = delivery.output ?? (await readFilebundleOutput())
    throwIfCopyCancelled(signal)
    const { root, files } = await collectEligibleDirectoryFiles(cwd, signal)
    throwIfCopyCancelled(signal)
@@ -46,8 +57,27 @@ export const runFilebundleCommand = async (
       return
    }
    const content = await createFolderMarkdownBundle(root, files, { signal })
-   await writeClipboard(content, signal)
-   console.log(clipboardSuccessMessage('filebundle', files.length))
+   throwIfCopyCancelled(signal)
+   if (output === 'text') {
+      await (delivery.writeText ?? copyToClipboard)(content, signal)
+      throwIfCopyCancelled(signal)
+      console.log(clipboardSuccessMessage('filebundle', files.length))
+      return
+   }
+   const filePath = await (delivery.writeMarkdownFile ?? writeFilebundleMarkdown)(root, content, signal)
+   throwIfCopyCancelled(signal)
+   try {
+      await (delivery.writeFileClipboard ?? copyFileToClipboard)(filePath, signal)
+   } catch (error) {
+      if (signal?.aborted || error instanceof ClipboardInterruptedError) throw error
+      throw new CommitMasterError(
+         `The Markdown file was saved at ${filePath}, but it could not be copied to the clipboard. ${error instanceof Error ? error.message : String(error)}`,
+         { cause: error }
+      )
+   }
+   throwIfCopyCancelled(signal)
+   console.log(`${files.length} files bundled.`)
+   console.log(`Markdown file copied to clipboard: ${path.basename(filePath)}`)
 }
 
 export const runClipboardCommand = async (
