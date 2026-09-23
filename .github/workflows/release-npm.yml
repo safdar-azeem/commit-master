@@ -1,0 +1,112 @@
+name: Publish npm packages
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-native-dependencies:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve one Rust dependency lockfile for this release
+        run: cargo generate-lockfile --manifest-path native/linux-file-clipboard/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipboard-cargo-lock
+          path: native/linux-file-clipboard/Cargo.lock
+          if-no-files-found: error
+
+  build-linux-helper:
+    needs: resolve-native-dependencies
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: clipboard-cargo-lock
+          path: native/linux-file-clipboard
+      - name: Test native helper source
+        run: cargo test --locked --manifest-path native/linux-file-clipboard/Cargo.toml
+      - name: Compile native helper
+        run: cargo build --locked --release --manifest-path native/linux-file-clipboard/Cargo.toml
+      - name: Stage platform binary
+        run: |
+          mkdir -p packages/clipboard-linux-${{ matrix.arch }}/bin
+          cp native/linux-file-clipboard/target/release/commit-master-file-clipboard packages/clipboard-linux-${{ matrix.arch }}/bin/
+          chmod 755 packages/clipboard-linux-${{ matrix.arch }}/bin/commit-master-file-clipboard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clipboard-linux-${{ matrix.arch }}
+          path: packages/clipboard-linux-${{ matrix.arch }}/bin/commit-master-file-clipboard
+          if-no-files-found: error
+
+  publish:
+    needs: build-linux-helper
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: https://registry.npmjs.org
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: clipboard-cargo-lock
+          path: native/linux-file-clipboard
+      - uses: actions/download-artifact@v4
+        with:
+          name: clipboard-linux-x64
+          path: packages/clipboard-linux-x64/bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: clipboard-linux-arm64
+          path: packages/clipboard-linux-arm64/bin
+      - name: Restore executable permissions
+        run: chmod 755 packages/clipboard-linux-{x64,arm64}/bin/commit-master-file-clipboard
+      - name: Verify versions and staged binaries
+        run: node scripts/verify-clipboard-release.mjs "${GITHUB_REF_NAME#v}"
+      - name: Collect third-party license notices
+        run: |
+          cargo install cargo-about --version 0.9.0 --locked --features cli
+          cargo about generate --manifest-path native/linux-file-clipboard/Cargo.toml --config native/linux-file-clipboard/about.toml native/linux-file-clipboard/about.hbs > packages/clipboard-linux-x64/THIRD_PARTY_LICENSES.md
+          cp packages/clipboard-linux-x64/THIRD_PARTY_LICENSES.md packages/clipboard-linux-arm64/THIRD_PARTY_LICENSES.md
+      - name: Install test dependencies without resolving unpublished helper packages
+        run: |
+          release_manifest_backup="$RUNNER_TEMP/commit-master-release-package.json"
+          cp package.json "$release_manifest_backup"
+          trap 'cp "$release_manifest_backup" package.json' EXIT
+          npm pkg delete optionalDependencies
+          npm install --ignore-scripts --package-lock=false
+          cp "$release_manifest_backup" package.json
+          trap - EXIT
+      - name: Test main package with its release manifest restored
+        run: |
+          node scripts/verify-clipboard-release.mjs "${GITHUB_REF_NAME#v}"
+          npm test
+          node --test scripts/publish-release-package.test.mjs
+      - name: Publish linux-x64 helper
+        run: node scripts/publish-release-package.mjs ./packages/clipboard-linux-x64
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish linux-arm64 helper
+        run: node scripts/publish-release-package.mjs ./packages/clipboard-linux-arm64
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish Commit Master
+        run: node scripts/publish-release-package.mjs .
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
