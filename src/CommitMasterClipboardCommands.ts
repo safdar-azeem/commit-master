@@ -1,15 +1,21 @@
 import { copyToClipboard } from './CommitMasterClipboard.js'
 import path from 'node:path'
-import { createCombinedMarkdownBundle, createMarkdownBundle } from './CommitMasterBundle.js'
+import {
+   createCombinedMarkdownBundle,
+   createFolderMarkdownBundle,
+   createMarkdownBundle,
+} from './CommitMasterBundle.js'
 import {
    collectEligibleChanges,
    escapeDisplayedPath,
    resolveAbsoluteChangedPath,
 } from './CommitMasterChangedFiles.js'
+import { collectEligibleDirectoryFiles } from './CommitMasterDirectoryFiles.js'
 import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
 import { resolveRepositoryRoot } from './CommitMasterRepository.js'
 
-export type ClipboardCommandName = 'gitpaths' | 'gitbundle'
+export type ClipboardCommandName = 'gitpaths' | 'gitbundle' | 'filebundle'
+export type GitClipboardCommandName = Exclude<ClipboardCommandName, 'filebundle'>
 export type ClipboardWriter = (content: string, signal?: AbortSignal) => Promise<void>
 export type BundleCreator = typeof createMarkdownBundle
 
@@ -19,14 +25,33 @@ export const clipboardSuccessMessage = (
 ): string =>
    command === 'gitpaths'
       ? `${count} file paths copied.`
-      : `${count} changed files bundled and copied.`
+      : command === 'gitbundle'
+        ? `${count} changed files bundled and copied.`
+        : `${count} files bundled and copied.`
 
 const throwIfCopyCancelled = (signal?: AbortSignal): void => {
    if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
 }
 
+export const runFilebundleCommand = async (
+   cwd: string,
+   signal?: AbortSignal,
+   writeClipboard: ClipboardWriter = copyToClipboard
+): Promise<void> => {
+   throwIfCopyCancelled(signal)
+   const { root, files } = await collectEligibleDirectoryFiles(cwd, signal)
+   throwIfCopyCancelled(signal)
+   if (files.length === 0) {
+      console.log('Nothing to copy. No eligible files were found.')
+      return
+   }
+   const content = await createFolderMarkdownBundle(root, files, { signal })
+   await writeClipboard(content, signal)
+   console.log(clipboardSuccessMessage('filebundle', files.length))
+}
+
 export const runClipboardCommand = async (
-   command: ClipboardCommandName,
+   command: GitClipboardCommandName,
    cwd: string,
    signal?: AbortSignal,
    writeClipboard: ClipboardWriter = copyToClipboard,
