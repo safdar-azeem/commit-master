@@ -1,10 +1,10 @@
 import { mkdir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
-import { homedir } from 'node:os'
 import path from 'node:path'
 import { CommitMasterError } from './CommitMasterErrors.js'
 import { resolveRepositoryRoot } from './CommitMasterRepository.js'
 import type { SavedWorkspace } from './CommitMasterTypes.js'
+import { commitMasterConfigDirectory } from './CommitMasterUserPaths.js'
 
 const DISCOVERY_DEPTH = 3
 const DISCOVERY_IGNORED_DIRECTORIES = new Set([
@@ -24,13 +24,8 @@ const DISCOVERY_IGNORED_DIRECTORIES = new Set([
 ])
 const WORKSPACE_NAME = /^[A-Za-z0-9][A-Za-z0-9_-]*$/
 
-const workspaceStorePath = (): string => {
-   const configRoot =
-      process.platform === 'win32'
-         ? process.env.APPDATA ?? path.join(homedir(), 'AppData', 'Roaming')
-         : process.env.XDG_CONFIG_HOME ?? path.join(homedir(), '.config')
-   return path.join(configRoot, 'commit-master', 'workspaces.json')
-}
+const workspaceStorePath = (): string =>
+   path.join(commitMasterConfigDirectory(), 'workspaces.json')
 
 const validateWorkspaceName = (name: string): string => {
    if (!WORKSPACE_NAME.test(name)) {
