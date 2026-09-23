@@ -2,37 +2,38 @@
 
 A command-line collection of Git utilities for automatic per-file commits, historical commit scheduling, sharing changed files, and safe project stashing.
 
+## Features
+
+- Automatic per-file Git commits
+- Backdated commit scheduling
+- Copy changed file paths
+- Copy changed files as Markdown
+- Bundle any folder without Git
+- Bundle multiple repositories
+- Save and reuse repository workspaces
+- Safe project stashing
+- File or text clipboard output
+- macOS, Windows, and Linux support
+
 ## Installation
 
-Install globally with npm:
+Install globally
 
 ```bash
 npm install --global commit-master
 ```
 
-Or with Yarn:
-
-```bash
-yarn global add commit-master
-```
-
-Or with pnpm:
-
-```bash
-pnpm add --global commit-master
-```
-
-One global installation exposes six primary commands: `gitauto`, `gitspan`, `gitpaths`, `gitbundle`, `filebundle`, and `gitstash`. Node.js 18.18 or newer is required. Git is required for Git-specific Commit Master commands; `filebundle` itself does not require Git. No package manager is required at runtime.
+Node.js 18.18 or newer is required. Git is required for Git-specific commands. `filebundle` does not require Git.
 
 ## How to Use
 
-Open your Git project in the terminal, or navigate to the project directory:
+Open your project in the terminal:
 
 ```bash
 cd path/to/your-project
 ```
 
-Then run one of the available commands inside that project:
+Available commands:
 
 ```bash
 gitauto
@@ -52,26 +53,26 @@ gitbundle --delete <name>
 gitstash ["stash title"]
 ```
 
-The Git commands work with the repository of the currently opened project. `filebundle` works with the current folder, whether or not it is a Git repository.
+Git commands work with the repository of the current project. `filebundle` works with the current folder whether or not it is a Git repository.
 
 ## Automatic Git Initialization
 
-If the current project is not a Git repository, an interactive terminal asks:
+If the current project is not a Git repository, Commit Master asks:
 
 ```text
 Git is not initialized in this project.
 Initialize it now? (Y/n)
 ```
 
-Press Enter or answer Yes to initialize Git in the current directory and continue the original command automatically. Answer No to cancel without changing the project.
+Press Enter or answer Yes to initialize Git and continue the original command. Answer No to cancel without changing the project.
 
-CI, redirected input, and other non-interactive environments never initialize Git or wait for input. They ask you to initialize Git before running Commit Master. Git identity is never created or changed automatically.
+Non-interactive environments such as CI never initialize Git or wait for input.
 
-This initialization flow applies to the normal current-repository commands. `gitbundle` workspace discovery and explicit repository paths never initialize a directory; they only use Git repositories that already exist. `filebundle` never checks for, initializes, or uses Git. After confirmation, the original command continues automatically in the newly initialized repository.
+`gitbundle` workspace discovery and explicit repository paths only use repositories that already exist. `filebundle` never checks for or initializes Git.
 
 ## Automatic File Commits
 
-Use `gitauto` inside your project to commit every current file change separately:
+Use `gitauto` to commit every current file change separately:
 
 ```bash
 gitauto
@@ -79,7 +80,7 @@ gitauto
 
 Each added, updated, deleted, or renamed file receives its own commit.
 
-Example commit messages:
+Example:
 
 ```text
 Add users.ts
@@ -90,7 +91,7 @@ Rename old-name.ts to new-name.ts
 
 ## Backdated Timestamping Commits
 
-Use `gitspan` inside your project to distribute current file changes across previous calendar days:
+Use `gitspan` to distribute current file changes across previous calendar days:
 
 ```bash
 gitspan 10 5
@@ -103,19 +104,27 @@ Arguments:
 5 = maximum commits per day
 ```
 
-The command automatically calculates how many days are required based on the number of changed files. Scheduling ignores the existing `HEAD` commit timestamp and only uses historical dates up through the current time, so a recent latest commit does not reduce capacity.
+If the requested range is too small for all changes, Commit Master automatically expands it further into the past.
 
-For example, 58 file changes with a limit of 5 commits per day will be distributed across 12 days. With 119 changes and `gitspan 10 5`, the range expands to 24 days.
+For example, 58 changes with a maximum of 5 commits per day require 12 days.
 
 ## Copy Changed File Paths
 
-Use `gitpaths` to copy the absolute paths of eligible uncommitted files:
+Use `gitpaths` to copy the absolute paths of eligible changed files:
 
 ```bash
 gitpaths
 ```
 
-It collects staged changes, unstaged tracked changes, and untracked non-ignored files from the complete resolved repository. Deleted paths are included, and a rename appears once under its new path. Results are deduplicated and sorted by path. Sensitive files remain visible as paths, but `gitpaths` never reads their contents.
+It collects:
+
+- staged changes
+- unstaged tracked changes
+- untracked non-ignored files
+- deleted paths
+- renamed paths under their new name
+
+Results are deduplicated and sorted.
 
 Example clipboard content:
 
@@ -126,254 +135,331 @@ Example clipboard content:
 /completeProjectPath/src/index.ts
 ```
 
-After a successful copy, the command prints `8 file paths copied.` using the actual count. A clean tree does not overwrite the clipboard.
+`gitpaths` copies file paths only and never reads their contents.
+
+If there are no eligible changes, your existing clipboard is left unchanged.
 
 ## Copy a Markdown Change Bundle
 
-Use `gitbundle` to copy a Markdown representation of eligible changed files:
+Use `gitbundle` to copy eligible changed files as Markdown:
 
 ```bash
 gitbundle
 ```
 
-Example clipboard content:
+The bundle includes file paths, change types, and readable file contents.
 
-````markdown
-Repository: /completeProjectPath
+Commit Master handles common file types automatically:
 
-### [MODIFIED] package.json
+- SVG files are included as readable source.
+- DOCX files include extractable document text.
+- PDF files include extractable page text.
+- PPTX files include extractable slide text and speaker notes.
+- Embedded images and charts are represented with placeholders.
+- Images, audio, video, archives, databases, models, native binaries, and similar binary files are shown with placeholders instead of raw binary data.
+- Sensitive files are shown without exposing their contents.
+- Scanned or image-only PDFs are not OCR'd.
 
-```json
-{
-  "name": "example"
-}
-```
-
-### [NEW] public/logo.svg
-
-```svg
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"></svg>
-```
-
-### [NEW] public/hero.png
+Common placeholders include:
 
 ```text
-[Binary file: hero.png - content omitted]
+[SENSITIVE FILE OMITTED]
+[FILE DELETED]
+[FILE NOT FOUND]
+[FILE UNREADABLE]
+[FILE TOO LARGE]
+[Embedded image omitted]
+[Embedded chart omitted]
+[PDF contains no extractable text - OCR not enabled]
 ```
 
-### [MODIFIED] docs/product-spec.docx
+### Bundle Limits
 
-```text
-[Extracted DOCX content]
+To prevent unexpectedly large clipboard payloads:
 
-Product Specification
-```
+- individual textual files are limited to 1 MiB
+- extracted document text is limited to 1 MiB
+- DOCX, PDF, and PPTX source files may be up to 32 MiB
+- the complete Markdown bundle is limited to 10 MiB
 
-------------------------------
-````
+Binary files represented by placeholders are not loaded into the Markdown bundle.
 
-The bundle uses an extension-appropriate code-fence language and automatically lengthens fences when file content contains backticks. SVG files are included as readable source with an `svg` fence. Changed Word documents, PDFs, and PowerPoint decks have their readable text extracted for review: DOCX as document text, PDF as page text, and PPTX as slide text. This is text extraction, not visual rendering or OCR. Where the document structure shows an embedded image, chart, or other visual, gitbundle inserts a short placeholder at that location instead of embedding the binary. Binary images, audio, video, models, archives, databases, WebAssembly, native binaries, and similar non-text files stay visible by path, with their payloads replaced by a short omission placeholder. It uses these explicit placeholders:
-
-- `[SENSITIVE FILE OMITTED]` for environment files, credentials, private keys, and other protected files
-- `[FILE DELETED]` for deleted files
-- `[FILE NOT FOUND]` when a changed file disappears before it can be read
-- `[FILE UNREADABLE]` for inaccessible or replaced files
-- `[FILE TOO LARGE]` when one textual file exceeds 1 MiB
-- `[Binary file: filename.png - content omitted]` for binary images, media, archives, databases, models, native binaries, and other non-text content that is not extracted
-- `[Extracted DOCX content]`, `[Extracted PDF content: N pages]`, and `[Extracted PPTX content: N slides]` as headers for extracted document text
-- `[Embedded image omitted]`, `[Embedded chart omitted]`, and `[Embedded visual content omitted]` for embedded visuals whose payloads are not included
-- `[PDF contains no extractable text - OCR not enabled]` for scanned or image-only PDFs
-- `[DOCX content could not be extracted]`, `[PDF content could not be extracted]`, and `[PPTX content could not be extracted]` when parsing fails safely
-
-Commit Master never silently truncates file content. Individual textual files are limited to 1 MiB and the complete Markdown bundle is limited to 10 MiB. Binary assets represented by an omission placeholder are not subject to the per-file textual size limit, because their payloads are never read into the bundle. DOCX, PDF, and PPTX source files may exceed 1 MiB; gitbundle reads those files with the same symlink and replacement protections as other bundle files, then extracts reviewable text from the acquired bytes instead of rejecting them as too large. Source documents are capped at 32 MiB, extracted text is capped at 1 MiB, and the complete bundle remains limited to 10 MiB. If extracted text is truncated, the bundle includes `[Extracted content truncated]`. If the total limit is exceeded, the command stops before invoking the clipboard provider. Symbolic links are represented by their link target text and are never followed outside the repository. Embedded document images, charts, and other visuals are never decoded, OCR'd, or included as Base64; only structural placeholders such as `[Embedded image omitted]` are added when those objects are detectable. Standalone changed PNG and JPEG files continue to use `[Binary file: filename.ext - content omitted]`.
-
-After success, `gitbundle` prints `8 changed files bundled and copied.` using the actual count of files represented in the bundle, including omitted-content assets.
-
-## Bundle Any Folder Without Git
-
-Use `filebundle` to bundle every eligible filesystem file below the current directory:
-
-```bash
-cd ~/Documents/project-files
-filebundle
-```
-
-Unlike `gitbundle`, which bundles eligible Git changes, `filebundle` recursively bundles eligible files from the selected folder itself. It does not require Git, does not inspect Git status, and does not initialize a repository. File headings use `[FILE]` because filesystem traversal has no Git change status:
-
-````markdown
-Folder: /Users/example/Documents/project-files
-
-### [FILE] README.md
-
-```markdown
-# Project files
-```
-
-### [FILE] src/index.ts
-
-```ts
-export const example = true
-```
-````
-
-By default, `filebundle` creates a `.md` file and copies that file itself to the clipboard for pasting as a file where the operating system and destination application support it. Generated files are kept outside the source project under `$XDG_CACHE_HOME/commit-master/filebundles` (or `~/.cache/commit-master/filebundles`) on macOS/Linux, and `%LOCALAPPDATA%\commit-master\filebundles` on Windows. If that location falls inside the selected folder, Commit Master uses a user-specific temporary cache outside it. A successful run prints the bundled file count and generated filename.
-
-To copy the Markdown text directly instead, set the global output preference:
-
-```bash
-filebundle --output text
-```
-
-To return to file output or check the effective setting:
-
-```bash
-filebundle --output file
-filebundle --output
-```
-
-The preference applies across terminals, folders, and projects. It is stored in `settings.json` beside Commit Master's existing user configuration, not in a repository. If it has never been set, `file` is the default. The `--output` commands only read or update this setting; they do not scan files or use the clipboard.
-
-Both output modes use the same content redaction, document extraction, binary placeholders, symlink handling, and size limits as `gitbundle`, while applying only Commit Master's built-in bundle exclusions. A `.gitignore` file is treated as an ordinary file and is not interpreted. In text mode, success prints `8 files bundled and copied.`
+Symbolic links are represented safely and are not followed outside the repository.
 
 ### Bundle Multiple Repositories
 
-The no-argument command remains the single-repository workflow shown above. To review several repositories together, pass their roots (or directories inside them) to `gitbundle`:
+Bundle several repositories together:
 
 ```bash
-gitbundle ./web-client ./api-service
-gitbundle /path/to/workspace/web-client /path/to/workspace/api-service
+gitbundle ./frontend ./api
+gitbundle /path/to/web-client /path/to/api-service
 ```
 
-Paths are resolved to Git roots and duplicate repositories are included once. The command makes one clipboard update only after the complete combined bundle has been constructed and passes the same 10 MiB safety limit. Its Markdown makes repository boundaries explicit:
+Repository paths are resolved to their Git roots, and duplicate repositories are included only once.
 
-````markdown
-# Repository Bundle
-
-Repositories: 2
-Files: 7
-
-## web-client
-
-Path: /path/to/workspace/web-client
-Changed files: 5
-
-### [MODIFIED] src/App.vue
-
-```vue
-<!-- changed content -->
-```
-````
-
-Use `--all` to discover repositories below a workspace directory:
+Use `--all` to discover repositories below a workspace:
 
 ```bash
 gitbundle --all
 gitbundle --all /path/to/workspace
 ```
 
-Discovery is bounded to three directory levels and skips `.git`, dependency, build, cache, and other heavy generated directories. Once it finds a repository it does not scan through it. A clean repository is reported and excluded from the bundle; if every selected repository is clean, the existing clipboard content is left untouched.
-
-Each file heading identifies its change type and uses a path relative to that repository. Renames include both paths; a rename with unchanged content uses `[NO CHANGES IN FILE - RENAMED ONLY]` instead of repeating the complete file.
+Discovery skips common dependency, build, Git, and cache directories. Clean repositories are reported but excluded from the final bundle.
 
 ### Save and Reuse Workspaces
 
-Save a resolved set of repositories for use from any terminal directory:
+Save a repository workspace:
 
 ```bash
-gitbundle --save project-workspace ./web-client ./api-service
+gitbundle --save project-workspace ./frontend ./api
 gitbundle --all --save project-workspace
+```
+
+Use it later:
+
+```bash
 gitbundle @project-workspace
 ```
 
-Saved workspaces contain only a name and repository paths in the current user's Commit Master configuration directory (`$XDG_CONFIG_HOME/commit-master` or `~/.config/commit-master` on macOS/Linux, and `%APPDATA%\\commit-master` on Windows). No file contents or Git changes are stored.
-
-Manage saved workspaces with:
+List saved workspaces:
 
 ```bash
 gitbundle --list
+```
+
+Delete one:
+
+```bash
 gitbundle --delete project-workspace
 ```
 
-Workspace names use letters, numbers, hyphens, and underscores. If a saved repository has been moved or deleted, `gitbundle @name` reports every unavailable path and does not substitute a different repository.
+Workspace names support letters, numbers, hyphens, and underscores.
+
+Saved workspaces store repository paths only. They do not store file contents or Git changes.
+
+## Bundle Any Folder Without Git
+
+Use `filebundle` to bundle files from any folder:
+
+```bash
+cd ~/Documents/project-files
+filebundle
+```
+
+Unlike `gitbundle`, `filebundle` does not use Git. It recursively bundles eligible files from the current folder.
+
+By default, `filebundle` creates a `.md` file outside the selected project and copies that file itself to the clipboard.
+
+### Copy Markdown Text Instead
+
+Set text output:
+
+```bash
+filebundle --output text
+```
+
+Return to file output:
+
+```bash
+filebundle --output file
+```
+
+Check the current setting:
+
+```bash
+filebundle --output
+```
+
+The preference is global and applies across terminals, folders, and projects.
+
+`file` is the default output mode.
+
+`filebundle` does not use `.gitignore`. A `.gitignore` file is treated as a normal file, while Commit Master's built-in exclusions still apply.
 
 ## Default Clipboard Ignore Rules
 
-Clipboard commands share generated-file, lockfile, and directory exclusions. Git's own ignore rules are respected first for `gitpaths` and `gitbundle`. `filebundle` applies the same built-in bundle exclusions without consulting Git or `.gitignore`. Commit Master additionally excludes from both `gitpaths` and `gitbundle`, and from `filebundle` when bundling folders:
+Commit Master automatically skips common generated, dependency, build, cache, lock, and temporary files.
 
-- Exact names: `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `Cargo.lock`, `generated.ts`, `mongoose.gen.ts`, `resolvers.generated.ts`, `typeDefs.generated.ts`, `types.generated.ts`, `tsconfig.tsbuildinfo`, `tsconfig.node.tsbuildinfo`, and `.DS_Store`.
-- Generated patterns: `*.generated.ts` and `vite.config.ts.timestamp-*`.
-- Directories at any depth: `_locales`, `src-tauri/target`, `gen`, `temp`, `ffmpeg`, `dist`, `.xcode`, `vendor/bundle`, `.git`, `Pods`, `.nuxt`, `.next`, `.idea`, `.bundle`, `node_modules`, and `cache`.
-- Noise extensions: `.log`, `.TAG`, and `.csv`.
+### Ignored Files
 
-`gitpaths` also omits common image, audio, video, SVG, PDF, DOCX, PPTX, ONNX, WASM, archive, database, and native-binary files, because it copies filesystem paths rather than a reviewable bundle.
+Exact names include:
 
-`gitbundle` keeps those meaningful asset and document files visible:
+```text
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+Cargo.lock
+generated.ts
+mongoose.gen.ts
+resolvers.generated.ts
+typeDefs.generated.ts
+types.generated.ts
+tsconfig.tsbuildinfo
+tsconfig.node.tsbuildinfo
+.DS_Store
+```
 
-- SVG is included as readable source with an `svg` code fence.
-- DOCX, PDF, and PPTX files include extracted reviewable text (document, page, and slide text). DOCX headers, body, footnotes/endnotes, and footers are included as explicit sections. PPTX speaker notes stay on their slides. Embedded images and charts are marked in place with `[Embedded image omitted]` or `[Embedded chart omitted]`; their binaries are never included, Base64 is never generated, and OCR is not performed. Scanned PDFs are not OCR'd.
-- Binary images, audio, video, ONNX, WASM, archives, databases, native binaries, and other omitted-content files appear by path with `[Binary file: filename.ext - content omitted]`.
-- Their presence counts toward the bundled file count. Binary payloads that are not extracted are never read into the bundle.
+Generated patterns include:
 
-Filename, extension, and directory matching is case-insensitive and works at any nesting level. `package.json` is intentionally included.
+```text
+*.generated.ts
+vite.config.ts.timestamp-*
+```
 
-Sensitive paths—including `.env` variants, private-key formats, credential JSON files, `.npmrc`, `.pypirc`, and `.netrc`—remain in the shared eligible list. `gitpaths` copies only their paths, while `gitbundle` replaces their content with `[SENSITIVE FILE OMITTED]`, even when the file is already tracked by Git.
+### Ignored Directories
 
-Control characters in copied path displays are escaped as readable sequences such as `\n`, `\r`, and `\t`; the real path remains unchanged for filesystem access. Markdown-sensitive heading characters are escaped without altering valid Unicode names.
+These are ignored at any depth:
+
+```text
+_locales
+src-tauri/target
+gen
+temp
+ffmpeg
+dist
+.xcode
+vendor/bundle
+.git
+Pods
+.nuxt
+.next
+.idea
+.bundle
+node_modules
+cache
+```
+
+Noise extensions such as these are also ignored:
+
+```text
+.log
+.TAG
+.csv
+```
+
+`package.json` is intentionally included.
+
+### Binary and Document Files
+
+`gitpaths` omits common binary and document files because it copies filesystem paths intended for review.
+
+`gitbundle` keeps useful assets visible:
+
+- SVG is included as readable source.
+- DOCX, PDF, and PPTX include extractable text.
+- Images, media, archives, databases, models, WASM, native binaries, and other binary files appear with content-omitted placeholders.
+
+## Sensitive Files
+
+Sensitive paths remain visible when useful, but their contents are protected.
+
+Examples include:
+
+```text
+.env
+.env.*
+private keys
+credential JSON files
+.npmrc
+.pypirc
+.netrc
+```
+
+Behavior:
+
+- `gitpaths` copies their paths only.
+- `gitbundle` replaces their contents with `[SENSITIVE FILE OMITTED]`.
+
+This applies even when the sensitive file is already tracked by Git.
 
 ## Clipboard and Platform Support
 
-Commit Master supports macOS, Windows, and Linux without shell-string execution. It uses the native macOS and Windows clipboard tools, with PowerShell preferred on Windows for reliable Unicode text. On Linux it uses the first available supported clipboard provider: `wl-copy`, `xclip`, `xsel`, PowerShell or `clip.exe` under WSL, or Termux clipboard tools.
+Commit Master supports macOS, Windows, and Linux.
 
-The command reports success only after the clipboard process exits successfully. On Linux, if no supported provider is available, it reports:
+### macOS
+
+Text and file clipboard operations use native macOS clipboard capabilities.
+
+### Windows
+
+File output is copied as a native file item, and text clipboard operations support Unicode paths and content.
+
+### Linux
+
+For normal `filebundle` file output, Commit Master automatically installs and uses its native clipboard helper.
+
+Supported architectures:
 
 ```text
-Unable to copy to the clipboard.
-Install wl-copy, xclip, or xsel.
+x64
+arm64
 ```
 
-Pressing Ctrl+C exits with status 130 and reports `Copy cancelled.` followed by `The clipboard was not updated.` Commit-specific counts are not shown for clipboard commands.
+You do not need to install `wl-copy`, `xclip`, or `xsel` for normal file-mode usage.
+
+For text clipboard commands such as:
+
+```bash
+gitpaths
+gitbundle
+filebundle --output text
+```
+
+Commit Master uses an available Linux clipboard provider such as:
+
+```text
+wl-copy
+xclip
+xsel
+```
+
+If none is available, Commit Master reports that a supported clipboard provider is required.
+
+Headless Linux environments do not provide a desktop file clipboard.
+
+File pasting also depends on the destination application supporting file clipboard items.
 
 ## Stash Project Changes
 
-Use `gitstash` to save all current repository changes in a new Git stash:
+Use `gitstash` to save current project changes:
 
 ```bash
 gitstash
 ```
 
-The default stash title is `Commit Master stash`. Provide one quoted argument to use an exact custom title containing spaces, Unicode, or punctuation:
+The default stash title is:
+
+```text
+Commit Master stash
+```
+
+Use a custom title:
 
 ```bash
 gitstash "Before updating authentication"
 ```
 
-Additional positional arguments are rejected with the concise `gitstash` usage message. The single accepted argument is always treated as the stash title, not as a Git option.
+`gitstash` includes:
 
-The command includes modified, staged, deleted, renamed, and untracked non-ignored files. Git-ignored files remain untouched. After success, both the working tree and staging area are clean, and all earlier stash entries remain available below the newly created `stash@{0}`.
+- staged changes
+- unstaged changes
+- deleted files
+- renamed files
+- untracked non-ignored files
 
-Success output is intentionally minimal:
+Git-ignored files remain untouched.
 
-```text
-Changes stashed successfully.
-Changes stashed successfully: Before updating authentication
-```
+Existing stash entries are preserved.
 
-A clean repository returns `Nothing to stash. The working tree is clean.` without creating an empty entry. Unsafe merge, rebase, cherry-pick, revert, bisect, or conflict states are rejected before stash creation.
-
-When Git is initialized through Commit Master, `gitstash` continues automatically and supports the unborn repository by using a temporary internal base. That base is removed from the branch after the stash is verified; no user commit is left behind.
-
-Git must be able to resolve the user's configured identity because stash entries are stored as Git commit objects. Commit Master never invents or changes that identity.
-
-Ctrl+C before stash creation exits with status 130 and reports:
+If there is nothing to stash:
 
 ```text
-Stash cancelled.
-Your changes were not removed.
+Nothing to stash. The working tree is clean.
 ```
 
-If interruption arrives after Git created the stash, Commit Master verifies `refs/stash` and the working tree before reporting the final state.
+Unsafe merge, rebase, cherry-pick, revert, bisect, or conflict states are rejected before stash creation.
 
-Use standard Git commands to inspect or restore saved changes:
+Use normal Git commands to inspect or restore stashes:
 
 ```bash
 git stash list
@@ -381,82 +467,7 @@ git stash apply
 git stash pop
 ```
 
-`gitstash` only creates a stash; it never applies, pops, deletes, or overwrites an existing entry.
-
-## How It Works
-
-The toolkit:
-
-- Uses the Git repository of the currently opened project.
-- Offers to initialize Git in the current project when needed.
-- Finds added, modified, deleted, and renamed files.
-- Creates one commit for each logical file change.
-- Generates a clear commit message from the change type.
-- Uses the current timestamp with `gitauto`.
-- Generates chronological backdated timestamps with `gitspan`, independent of the existing `HEAD` timestamp.
-- Automatically expands the date range further into the past when more days are required.
-- Copies absolute changed-file paths with `gitpaths`.
-- Creates complete Markdown change bundles with `gitbundle`.
-- Creates complete Markdown folder bundles with `filebundle`, without Git.
-- Saves staged, unstaged, and untracked project changes with `gitstash`.
-- Preserves existing commits and working-tree changes.
-- Stops commit creation safely when the repository contains pre-existing staged changes, conflicts, or an active Git operation; clipboard commands intentionally include staged changes.
-
-## Examples
-
-Open your project:
-
-```bash
-cd path/to/your-project
-```
-
-Commit all current changes immediately:
-
-```bash
-gitauto
-```
-
-Distribute commits across 10 days with up to 5 commits per day:
-
-```bash
-gitspan 10 5
-```
-
-Distribute commits across 30 days with up to 3 commits per day:
-
-```bash
-gitspan 30 3
-```
-
-Copy changed-file paths:
-
-```bash
-gitpaths
-```
-
-Copy changed-file contents as a Markdown bundle:
-
-```bash
-gitbundle
-```
-
-Copy all eligible files in the current folder as a Markdown bundle without Git:
-
-```bash
-filebundle
-```
-
-Stash all project changes with the default title:
-
-```bash
-gitstash
-```
-
-Stash all project changes with a custom title:
-
-```bash
-gitstash "Work in progress"
-```
+`gitstash` creates a stash only. It never automatically applies, pops, deletes, or overwrites an existing entry.
 
 ## License
 
