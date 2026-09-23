@@ -1,5 +1,6 @@
 import { constants } from 'node:fs'
 import { lstat, open, readlink } from 'node:fs/promises'
+import path from 'node:path'
 import { TextDecoder } from 'node:util'
 import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
 import {
@@ -8,7 +9,7 @@ import {
    detectExtractableDocumentType,
    isOmittedBinaryContentPath,
    isSensitivePath,
-   resolveAbsoluteChangedPath,
+   resolveAbsoluteBundlePath,
 } from './CommitMasterChangedFiles.js'
 import {
    MAX_DOCUMENT_SOURCE_BYTES,
@@ -119,14 +120,50 @@ export const fileReadPlaceholder = (error: unknown): string | undefined => {
    return undefined
 }
 
+/**
+ * Ensures every path component below the bundle root is still a real directory.
+ * This deliberately permits a final symbolic link because links are rendered as
+ * their target text, never followed for content.
+ */
+const hasSafeBundleAncestors = async (bundleRoot: string, absolutePath: string): Promise<boolean> => {
+   const relativePath = path.relative(bundleRoot, absolutePath)
+   if (
+      !relativePath ||
+      relativePath === '..' ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath)
+   ) {
+      return false
+   }
+   try {
+      const rootMetadata = await lstat(bundleRoot)
+      if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) return false
+      const components = relativePath.split(path.sep)
+      let currentPath = bundleRoot
+      for (const component of components.slice(0, -1)) {
+         currentPath = path.join(currentPath, component)
+         const metadata = await lstat(currentPath)
+         if (!metadata.isDirectory() || metadata.isSymbolicLink()) return false
+      }
+      return true
+   } catch {
+      return false
+   }
+}
+
 const readBoundedFile = async (
+   bundleRoot: string,
    absolutePath: string,
    maxFileBytes: number,
    signal?: AbortSignal
 ): Promise<Buffer | '[FILE TOO LARGE]' | '[FILE UNREADABLE]'> => {
+   if (!(await hasSafeBundleAncestors(bundleRoot, absolutePath))) return '[FILE UNREADABLE]'
    const noFollow = process.platform === 'win32' ? 0 : constants.O_NOFOLLOW
    const handle = await open(absolutePath, constants.O_RDONLY | noFollow)
    try {
+      // Validate again after opening, before any bytes are read. This catches
+      // ancestor replacement between path validation and file acquisition.
+      if (!(await hasSafeBundleAncestors(bundleRoot, absolutePath))) return '[FILE UNREADABLE]'
       const metadata = await handle.stat()
       if (!metadata.isFile()) return '[FILE UNREADABLE]'
       const currentPathMetadata = await lstat(absolutePath)
@@ -169,17 +206,20 @@ const readBoundedFile = async (
          if (again.size > maxFileBytes) return '[FILE TOO LARGE]'
          if (again.size > contents.length) return '[FILE UNREADABLE]'
       }
+      if (!(await hasSafeBundleAncestors(bundleRoot, absolutePath))) return '[FILE UNREADABLE]'
       return contents
    } finally {
       await handle.close()
    }
 }
 
-const readWorkingTreeContent = async (
+const readBundleFileContent = async (
+   bundleRoot: string,
    absolutePath: string,
    change: FileChange,
    maxFileBytes: number,
-   signal?: AbortSignal
+   signal?: AbortSignal,
+   sourceName = 'changed file'
 ): Promise<FileContentResult> => {
    if (
       isSensitivePath(change.path) ||
@@ -194,14 +234,25 @@ const readWorkingTreeContent = async (
 
    try {
       throwIfAborted(signal)
+      if (!(await hasSafeBundleAncestors(bundleRoot, absolutePath))) {
+         return { kind: 'placeholder', content: '[FILE UNREADABLE]' }
+      }
       const metadata = await lstat(absolutePath)
       if (metadata.isSymbolicLink()) {
-         return { kind: 'content', content: await readlink(absolutePath), language: 'text' }
+         const target = await readlink(absolutePath)
+         return (await hasSafeBundleAncestors(bundleRoot, absolutePath))
+            ? { kind: 'content', content: target, language: 'text' }
+            : { kind: 'placeholder', content: '[FILE UNREADABLE]' }
       }
       if (!metadata.isFile()) return { kind: 'placeholder', content: '[FILE UNREADABLE]' }
       const documentType = detectExtractableDocumentType(change.path)
       if (documentType) {
-         const contents = await readBoundedFile(absolutePath, MAX_DOCUMENT_SOURCE_BYTES, signal)
+         const contents = await readBoundedFile(
+            bundleRoot,
+            absolutePath,
+            MAX_DOCUMENT_SOURCE_BYTES,
+            signal
+         )
          if (contents === '[FILE UNREADABLE]') return { kind: 'placeholder', content: contents }
          if (contents === '[FILE TOO LARGE]') {
             return { kind: 'placeholder', content: documentSourceTooLargePlaceholder(documentType) }
@@ -212,7 +263,7 @@ const readWorkingTreeContent = async (
          return { kind: 'placeholder', content: omittedBinaryContentPlaceholder(change.path) }
       }
 
-      const contents = await readBoundedFile(absolutePath, maxFileBytes, signal)
+      const contents = await readBoundedFile(bundleRoot, absolutePath, maxFileBytes, signal)
       if (typeof contents === 'string') return { kind: 'placeholder', content: contents }
       const decoded = decodeTextFile(contents)
       return decoded === undefined
@@ -222,7 +273,7 @@ const readWorkingTreeContent = async (
       if (error instanceof ClipboardInterruptedError) throw error
       const placeholder = fileReadPlaceholder(error)
       if (placeholder) return { kind: 'placeholder', content: placeholder }
-      throw new CommitMasterError(`Unable to read changed file "${change.path}".`, { cause: error })
+      throw new CommitMasterError(`Unable to read ${sourceName} "${change.path}".`, { cause: error })
    }
 }
 
@@ -234,7 +285,7 @@ const validateLimit = (value: number, name: string, maximum: number): number => 
 }
 
 export const createMarkdownBundle = async (
-   repositoryRoot: string,
+   bundleRoot: string,
    changes: readonly FileChange[],
    options: BundleOptions = {}
 ): Promise<string> => {
@@ -248,17 +299,52 @@ export const createMarkdownBundle = async (
       'Maximum bundle size',
       MAX_BUNDLE_BYTES
    )
-   const repositoryHeader = `Repository: ${escapeDisplayedPath(repositoryRoot)}`
+   const repositoryHeader = `Repository: ${escapeDisplayedPath(bundleRoot)}`
    const ending = '\n\n------------------------------'
    let bundleBytes = Buffer.byteLength(repositoryHeader) + Buffer.byteLength(ending)
    const sections: string[] = []
    for (const change of changes) {
-      const section = await createBundleSection(repositoryRoot, change, maxFileBytes, options.signal)
+      const section = await createBundleSection(bundleRoot, change, maxFileBytes, options.signal)
       bundleBytes = addBundleBytes(bundleBytes, '\n\n', section, maxBundleBytes)
       sections.push(section)
    }
 
    return `${repositoryHeader}\n\n${sections.join('\n\n')}${ending}`
+}
+
+/** Renders a filesystem bundle with the same safe file-content handling as gitbundle. */
+export const createFolderMarkdownBundle = async (
+   folderRoot: string,
+   files: readonly FileChange[],
+   options: BundleOptions = {}
+): Promise<string> => {
+   const maxFileBytes = validateLimit(
+      options.maxFileBytes ?? MAX_BUNDLE_FILE_BYTES,
+      'Maximum file size',
+      MAX_BUNDLE_FILE_BYTES
+   )
+   const maxBundleBytes = validateLimit(
+      options.maxBundleBytes ?? MAX_BUNDLE_BYTES,
+      'Maximum bundle size',
+      MAX_BUNDLE_BYTES
+   )
+   const folderHeader = `Folder: ${escapeDisplayedPath(folderRoot)}`
+   const ending = '\n\n------------------------------'
+   let bundleBytes = Buffer.byteLength(folderHeader) + Buffer.byteLength(ending)
+   const sections: string[] = []
+   for (const file of files) {
+      const section = await createBundleSection(
+         folderRoot,
+         file,
+         maxFileBytes,
+         options.signal,
+         'FILE',
+         'folder file'
+      )
+      bundleBytes = addBundleBytes(bundleBytes, '\n\n', section, maxBundleBytes)
+      sections.push(section)
+   }
+   return `${folderHeader}\n\n${sections.join('\n\n')}${ending}`
 }
 
 const addBundleBytes = (
@@ -270,27 +356,36 @@ const addBundleBytes = (
    const total = currentBytes + Buffer.byteLength(separator) + Buffer.byteLength(content)
    if (total > maxBundleBytes) {
       throw new CommitMasterError(
-         'Markdown bundle exceeds the 10 MiB safety limit. Reduce the number or size of changed files and try again.'
+         'Markdown bundle exceeds the 10 MiB safety limit. Reduce the number or size of files and try again.'
       )
    }
    return total
 }
 
 const createBundleSection = async (
-   repositoryRoot: string,
+   bundleRoot: string,
    change: FileChange,
    maxFileBytes: number,
-   signal?: AbortSignal
+   signal?: AbortSignal,
+   headingKind?: string,
+   sourceName?: string
 ): Promise<string> => {
    throwIfAborted(signal)
-   const absolutePath = resolveAbsoluteChangedPath(repositoryRoot, change.path)
-   const result = await readWorkingTreeContent(absolutePath, change, maxFileBytes, signal)
+   const absolutePath = resolveAbsoluteBundlePath(bundleRoot, change.path)
+   const result = await readBundleFileContent(
+      bundleRoot,
+      absolutePath,
+      change,
+      maxFileBytes,
+      signal,
+      sourceName
+   )
    const content = result.content
    const language = result.kind === 'content' ? result.language : 'text'
    const fence = createSafeFence(content)
    const contentWithNewline = content.endsWith('\n') ? content : `${content}\n`
    const headingPath = createChangeHeadingPath(change)
-   return `### [${change.kind.toUpperCase()}] ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
+   return `### [${headingKind ?? change.kind.toUpperCase()}] ${headingPath}\n\n${fence}${language}\n${contentWithNewline}${fence}`
 }
 
 const createChangeHeadingPath = (change: FileChange): string => {
