@@ -221,16 +221,22 @@ export const collectEligibleChanges = async (
 export const resolveAbsoluteChangedPath = (
    repositoryRoot: string,
    relativePath: string
+): string => resolveAbsoluteBundlePath(repositoryRoot, relativePath, 'Git returned a path outside the repository')
+
+export const resolveAbsoluteBundlePath = (
+   root: string,
+   relativePath: string,
+   outsideRootMessage = 'A file path is outside the selected folder'
 ): string => {
-   const absolutePath = path.resolve(repositoryRoot, relativePath)
-   const relativeToRoot = path.relative(repositoryRoot, absolutePath)
+   const absolutePath = path.resolve(root, relativePath)
+   const relativeToRoot = path.relative(root, absolutePath)
    if (
       relativeToRoot === '' ||
       relativeToRoot === '..' ||
       relativeToRoot.startsWith(`..${path.sep}`) ||
       path.isAbsolute(relativeToRoot)
    ) {
-      throw new CommitMasterError(`Git returned a path outside the repository: "${relativePath}".`)
+      throw new CommitMasterError(`${outsideRootMessage}: "${relativePath}".`)
    }
    return absolutePath
 }
