@@ -16,6 +16,7 @@ import {
    StashOutcomeUnknownError,
 } from './CommitMasterErrors.js'
 import { InterruptionController } from './CommitMasterInterruption.js'
+import { readFilebundleOutput, saveFilebundleOutput } from './CommitMasterSettings.js'
 import { createCommitMessage } from './CommitMasterMessages.js'
 import { type CommitspanOutputDetails } from './CommitMasterOutput.js'
 import { CommitProgressReporter } from './CommitMasterProgress.js'
@@ -47,6 +48,9 @@ export const USAGE = `Usage:
   gitpaths
   gitbundle
   filebundle
+  filebundle --output
+  filebundle --output file
+  filebundle --output text
   gitbundle <repository-path> [...repository-path]
   gitbundle --all [workspace-path]
   gitbundle --save <name> <repository-path> [...repository-path]
@@ -62,6 +66,7 @@ Examples:
   gitpaths
   gitbundle
   filebundle
+  filebundle --output text
   gitbundle ./app ./api
   gitbundle --all ./workspace
   gitbundle --all --save erp
@@ -196,9 +201,17 @@ export const runCommand = async (
    interruption: InterruptionController
 ): Promise<void> => {
    if (command === 'filebundle') {
-      if (args.length !== 0) {
-         throw new CommitMasterError(`filebundle does not accept arguments.\n\n${USAGE}`)
+      if (args.length === 1 && args[0] === '--output') {
+         console.log(`filebundle output: ${await readFilebundleOutput()}`)
+         return
       }
+      if (args.length === 2 && args[0] === '--output' &&
+          (args[1] === 'file' || args[1] === 'text')) {
+         await saveFilebundleOutput(args[1])
+         console.log(`filebundle output set to ${args[1]}.`)
+         return
+      }
+      if (args.length !== 0) throw new CommitMasterError(`Invalid filebundle arguments.\n\n${USAGE}`)
       await runFilebundleCommand(process.cwd(), interruption.signal)
       return
    }
