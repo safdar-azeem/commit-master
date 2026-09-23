@@ -26,9 +26,11 @@ import {
 } from '../dist/CommitMasterProgress.js'
 import { createProgressHeader } from '../dist/CommitMasterOutput.js'
 import { createCommitMessage } from '../dist/CommitMasterMessages.js'
+import { runCommand } from '../dist/CommitMasterCli.js'
 import {
    MAX_BUNDLE_BYTES,
    createCombinedMarkdownBundle,
+   createFolderMarkdownBundle,
    createMarkdownBundle,
    createSafeFence,
    detectFenceLanguage,
@@ -47,9 +49,11 @@ import {
    isSensitivePath,
    resolveAbsoluteChangedPath,
 } from '../dist/CommitMasterChangedFiles.js'
+import { collectEligibleDirectoryFiles } from '../dist/CommitMasterDirectoryFiles.js'
 import {
    clipboardSuccessMessage,
    runClipboardCommand,
+   runFilebundleCommand,
    runWorkspaceBundleCommand,
 } from '../dist/CommitMasterClipboardCommands.js'
 import {
@@ -85,6 +89,7 @@ const gitautoBinary = fileURLToPath(
 )
 const gitpathsBinary = fileURLToPath(new URL('../dist/CommitMasterGitpaths.js', import.meta.url))
 const gitbundleBinary = fileURLToPath(new URL('../dist/CommitMasterGitbundle.js', import.meta.url))
+const filebundleBinary = fileURLToPath(new URL('../dist/CommitMasterFilebundle.js', import.meta.url))
 const gitstashBinary = fileURLToPath(new URL('../dist/CommitMasterGitstash.js', import.meta.url))
 const temporaryPaths = new Set<string>()
 
@@ -156,7 +161,7 @@ const createBaselineCommit = async (
 
 const runCli = (
    repository: string,
-   command: 'gitspan' | 'gitauto' | 'gitpaths' | 'gitbundle' | 'gitstash',
+   command: 'gitspan' | 'gitauto' | 'gitpaths' | 'gitbundle' | 'filebundle' | 'gitstash',
    args: readonly string[] = [],
    environment?: NodeJS.ProcessEnv
 ): CommandResult =>
@@ -171,7 +176,9 @@ const runCli = (
                 ? gitpathsBinary
                 : command === 'gitbundle'
                   ? gitbundleBinary
-                  : gitstashBinary,
+                  : command === 'filebundle'
+                    ? filebundleBinary
+                    : gitstashBinary,
          ...args,
       ],
       repository,
@@ -219,10 +226,203 @@ describe('package command names', () => {
       assert.equal(manifest.bin.gitspan, 'dist/CommitMasterCommitspan.js')
       assert.equal(manifest.bin.gitpaths, 'dist/CommitMasterGitpaths.js')
       assert.equal(manifest.bin.gitbundle, 'dist/CommitMasterGitbundle.js')
+      assert.equal(manifest.bin.filebundle, 'dist/CommitMasterFilebundle.js')
       assert.equal(manifest.bin.gitstash, 'dist/CommitMasterGitstash.js')
       assert.equal(manifest.bin.autocommit, manifest.bin.gitauto)
       assert.equal(manifest.bin.commitspan, manifest.bin.gitspan)
    })
+})
+
+describe('filebundle', () => {
+   it('collects a non-Git folder recursively with shared exclusions and deterministic paths', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'src/z.ts', 'export const z = true\n')
+      await writeRepositoryFile(folder, 'src/a.ts', 'export const a = true\n')
+      await writeRepositoryFile(folder, '.gitignore', 'ignored-by-git\n')
+      await writeRepositoryFile(folder, 'node_modules/package/hidden.ts', 'hidden\n')
+      await writeRepositoryFile(folder, 'reports/debug.LOG', 'noise\n')
+      await writeRepositoryFile(folder, 'assets/logo.svg', '<svg></svg>\n')
+      await writeFile(join(folder, 'assets/photo.png'), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await writeRepositoryFile(folder, '.env.local', 'TOKEN=must-not-appear\n')
+
+      const { root, files } = await collectEligibleDirectoryFiles(folder)
+      assert.equal(root, await realpath(folder))
+      assert.deepEqual(files.map((file) => file.path), [
+         '.env.local',
+         '.gitignore',
+         'assets/logo.svg',
+         'assets/photo.png',
+         'src/a.ts',
+         'src/z.ts',
+      ])
+
+      const bundle = await createFolderMarkdownBundle(root, files)
+      assert.match(bundle, new RegExp(`^Folder: ${root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+      assert.match(bundle, /### \[FILE\] src\/a\.ts/)
+      assert.match(bundle, /```svg\n<svg><\/svg>/)
+      assert.match(bundle, /\[Binary file: photo\.png - content omitted\]/)
+      assert.match(bundle, /\[SENSITIVE FILE OMITTED\]/)
+      assert.doesNotMatch(bundle, /must-not-appear|node_modules|debug\.LOG/)
+   })
+
+   it('leaves the clipboard untouched when a folder has no eligible files', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'node_modules/package/hidden.ts', 'hidden\n')
+      let copied = false
+      await runFilebundleCommand(folder, undefined, async () => {
+         copied = true
+      })
+      assert.equal(copied, false)
+   })
+
+   it(
+      'represents symbolic links without following their targets',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         const outside = join(await createProject(), 'outside-secret.txt')
+         await writeFile(outside, 'must-not-be-read\n', 'utf8')
+         await symlink(outside, join(folder, 'linked.txt'))
+
+         const { root, files } = await collectEligibleDirectoryFiles(folder)
+         const bundle = await createFolderMarkdownBundle(root, files)
+         assert.match(bundle, new RegExp(outside.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+         assert.doesNotMatch(bundle, /must-not-be-read/)
+      }
+   )
+
+   it(
+      'does not read outside content when a collected directory becomes a symbolic link',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         const outside = await createProject()
+         await writeRepositoryFile(folder, 'subdir/visible.txt', 'inside\n')
+         await writeRepositoryFile(outside, 'visible.txt', 'OUTSIDE-SECRET\n')
+         const { root, files } = await collectEligibleDirectoryFiles(folder)
+         await rename(join(folder, 'subdir'), join(folder, 'original-subdir'))
+         await symlink(outside, join(folder, 'subdir'))
+
+         const bundle = await createFolderMarkdownBundle(root, files)
+         assert.match(bundle, /### \[FILE\] subdir\/visible\.txt/)
+         assert.match(bundle, /\[FILE UNREADABLE\]/)
+         assert.doesNotMatch(bundle, /OUTSIDE-SECRET/)
+      }
+   )
+
+   it(
+      'treats directory links and link loops as leaf entries',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         const outside = await createProject()
+         await writeRepositoryFile(outside, 'secret.txt', 'OUTSIDE-SECRET\n')
+         await symlink(outside, join(folder, 'outside-directory'))
+         await symlink(folder, join(folder, 'loop'))
+
+         const { root, files } = await collectEligibleDirectoryFiles(folder)
+         assert.deepEqual(files.map((file) => file.path), ['loop', 'outside-directory'])
+         const bundle = await createFolderMarkdownBundle(root, files)
+         assert.doesNotMatch(bundle, /OUTSIDE-SECRET|secret\.txt/)
+      }
+   )
+
+   it('preserves selected files as placeholders when they disappear or become unreadable', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'missing.txt', 'gone\n')
+      await writeRepositoryFile(folder, 'replaced.txt', 'replaced\n')
+      const { root, files } = await collectEligibleDirectoryFiles(folder)
+      await unlink(join(folder, 'missing.txt'))
+      await unlink(join(folder, 'replaced.txt'))
+      await mkdir(join(folder, 'replaced.txt'))
+
+      const bundle = await createFolderMarkdownBundle(root, files)
+      assert.match(bundle, /missing\.txt[\s\S]*\[FILE NOT FOUND\]/)
+      assert.match(bundle, /replaced\.txt[\s\S]*\[FILE UNREADABLE\]/)
+   })
+
+   it('enforces shared file and bundle limits before writing the clipboard', async () => {
+      const folder = await createProject()
+      await writeRepositoryFile(folder, 'large.txt', 'x'.repeat(1024 * 1024 + 1))
+      const { root, files } = await collectEligibleDirectoryFiles(folder)
+      const fileBundle = await createFolderMarkdownBundle(root, files)
+      assert.match(fileBundle, /\[FILE TOO LARGE\]/)
+
+      for (let index = 0; index < 11; index += 1) {
+         await writeRepositoryFile(folder, `bundle-${index}.txt`, 'x'.repeat(1024 * 1024))
+      }
+      let copied = false
+      await assert.rejects(
+         runFilebundleCommand(folder, undefined, async () => {
+            copied = true
+         }),
+         /Markdown bundle exceeds the 10 MiB safety limit/
+      )
+      assert.equal(copied, false)
+   })
+
+   it('rejects arguments before attempting any folder or Git operation', async () => {
+      await assert.rejects(
+         runCommand('filebundle', ['not-supported'], new InterruptionController()),
+         /filebundle does not accept arguments/
+      )
+   })
+
+   it('uses filesystem contents even when the current folder is a Git repository', async () => {
+      const repository = await createRepository()
+      await createBaselineCommit(repository, { 'unchanged.ts': 'export const unchanged = true\n' })
+      let copied = ''
+      await runFilebundleCommand(repository, undefined, async (content) => {
+         copied = content
+      })
+      assert.match(copied, /### \[FILE\] unchanged\.ts/)
+   })
+
+   it(
+      'runs through the CLI in a non-Git folder without initializing Git',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         await writeRepositoryFile(folder, 'note.txt', 'non-git folder\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-filebundle-wrapper-'))
+         temporaryPaths.add(wrapperDirectory)
+         const provider = process.platform === 'darwin' ? 'pbcopy' : 'wl-copy'
+         const wrapper = join(wrapperDirectory, provider)
+         await writeFile(wrapper, '#!/bin/sh\ncat >/dev/null\n', 'utf8')
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(folder, 'filebundle', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+         })
+         assert.equal(result.status, 0)
+         assert.match(result.stdout, /1 files bundled and copied\./)
+         assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Git is not initialized/)
+         await assert.rejects(access(join(folder, '.git')))
+      }
+   )
+
+   it(
+      'uses clipboard cancellation output without reporting filebundle success',
+      { skip: process.platform === 'win32' },
+      async () => {
+         const folder = await createProject()
+         await writeRepositoryFile(folder, 'note.txt', 'cancel me\n')
+         const wrapperDirectory = await mkdtemp(join(tmpdir(), 'commit-master-filebundle-cancel-'))
+         temporaryPaths.add(wrapperDirectory)
+         const provider = process.platform === 'darwin' ? 'pbcopy' : 'wl-copy'
+         const wrapper = join(wrapperDirectory, provider)
+         await writeFile(wrapper, '#!/bin/sh\nkill -INT "$PPID"\nexit 130\n', 'utf8')
+         await chmod(wrapper, 0o755)
+
+         const result = runCli(folder, 'filebundle', [], {
+            PATH: `${wrapperDirectory}:${process.env.PATH ?? ''}`,
+         })
+         assert.equal(result.status, 130)
+         assert.match(result.stderr, /Copy cancelled\./)
+         assert.match(result.stderr, /The clipboard was not updated\./)
+         assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /files bundled and copied/i)
+      }
+   )
 })
 
 describe('Git initialization', () => {
