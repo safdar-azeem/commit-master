@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
-import { pathToFileURL } from 'node:url'
 import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
+import { resolveLinuxClipboardHelper } from './CommitMasterLinuxClipboardHelper.js'
 
 export interface ClipboardProgram {
    command: string
@@ -19,20 +19,30 @@ const POWERSHELL_CLIPBOARD_SCRIPT =
 const POWERSHELL_FILE_CLIPBOARD_SCRIPT =
    '[Console]::InputEncoding=[Text.Encoding]::UTF8; Add-Type -AssemblyName System.Windows.Forms; $items=New-Object System.Collections.Specialized.StringCollection; [void]$items.Add([Console]::In.ReadToEnd()); [System.Windows.Forms.Clipboard]::SetFileDropList($items)'
 
+const JXA_FILE_CLIPBOARD_SCRIPT = `ObjC.import('AppKit')
+function run(argv) {
+   const pasteboard = $.NSPasteboard.generalPasteboard
+   pasteboard.clearContents
+   const fileURL = $.NSURL.fileURLWithPath(argv[0])
+   if (!pasteboard.writeObjects([fileURL.js])) {
+      throw new Error('Unable to copy file to clipboard')
+   }
+}`
+
+interface FileClipboardAttempt {
+   program: ClipboardProgram
+   content: string
+}
+
 const fileClipboardPrograms = (
    filePath: string,
    platform: NodeJS.Platform
-): readonly { program: ClipboardProgram; content: string }[] => {
+): readonly FileClipboardAttempt[] => {
    if (platform === 'darwin') {
       return [{
          program: {
             command: 'osascript',
-            args: [
-               '-e', 'on run argv',
-               '-e', 'set the clipboard to (POSIX file (item 1 of argv) as alias)',
-               '-e', 'end run',
-               filePath,
-            ],
+            args: ['-l', 'JavaScript', '-e', JXA_FILE_CLIPBOARD_SCRIPT, filePath],
          },
          content: '',
       }]
@@ -45,13 +55,6 @@ const fileClipboardPrograms = (
          },
          content: filePath,
       }]
-   }
-   if (platform === 'linux') {
-      const uriList = `${pathToFileURL(filePath).href}\r\n`
-      return [
-         { program: { command: 'wl-copy', args: ['--type', 'text/uri-list'] }, content: uriList },
-         { program: { command: 'xclip', args: ['-selection', 'clipboard', '-t', 'text/uri-list'] }, content: uriList },
-      ]
    }
    return []
 }
@@ -111,7 +114,11 @@ const writeWithProgram = (
       child.once('close', (exitCode) => {
          if (settled) return
          settled = true
-         resolve(exitCode === 0 && !inputFailed)
+         if (exitCode === 0 && !inputFailed) resolve(true)
+         else reject(new CommitMasterError(
+            Buffer.concat(stderr).toString('utf8').trim() ||
+               `Clipboard provider exited with status ${exitCode ?? 'unknown'}.`
+         ))
       })
       child.stdin.end(content)
    })
@@ -144,8 +151,29 @@ export const copyFileToClipboard = async (
    filePath: string,
    signal?: AbortSignal,
    platform: NodeJS.Platform = process.platform,
-   write: ClipboardProgramWriter = writeWithProgram
+   write: ClipboardProgramWriter = writeWithProgram,
+   environment: NodeJS.ProcessEnv = process.env,
+   arch: string = process.arch,
+   resolveHelper: typeof resolveLinuxClipboardHelper = resolveLinuxClipboardHelper
 ): Promise<void> => {
+   if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
+   if (platform === 'linux') {
+      if (!environment.WAYLAND_DISPLAY && !environment.DISPLAY) {
+         throw new CommitMasterError('No graphical Linux clipboard session is available (WAYLAND_DISPLAY and DISPLAY are unset).')
+      }
+      const helper = resolveHelper(platform, arch)
+      if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
+      let failure: unknown
+      try {
+         if (await write({ command: helper, args: [filePath] }, '', signal)) return
+      } catch (error) {
+         if (signal?.aborted) throw new ClipboardInterruptedError({ cause: error })
+         failure = error
+      }
+      if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
+      const detail = failure instanceof Error ? ` ${failure.message}` : ''
+      throw new CommitMasterError(`The bundled Linux file clipboard helper could not copy the file.${detail}`, { cause: failure })
+   }
    for (const { program, content } of fileClipboardPrograms(filePath, platform)) {
       if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
       try {
@@ -156,9 +184,7 @@ export const copyFileToClipboard = async (
    }
    if (signal?.aborted) throw new ClipboardInterruptedError({ cause: signal.reason })
    const guidance =
-      platform === 'linux'
-         ? ' Install wl-copy or xclip with file URI clipboard support.'
-         : platform === 'darwin' || platform === 'win32'
+      platform === 'darwin' || platform === 'win32'
            ? ' Check that the system clipboard is available.'
            : ' File clipboard copying is not supported on this platform.'
    throw new CommitMasterError(`Unable to copy the Markdown file to the clipboard.${guidance}`)
