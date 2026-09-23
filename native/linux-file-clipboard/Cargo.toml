@@ -1,0 +1,13 @@
+[package]
+name = "commit-master-file-clipboard"
+version = "0.1.9"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+libc = "0.2"
+url = "2.5"
+wl-clipboard-rs = { version = "0.9.3", default-features = false }
+x11-clipboard = "0.9.3"
+x11rb = "0.13"
