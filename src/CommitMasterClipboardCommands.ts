@@ -12,7 +12,7 @@ import {
 } from './CommitMasterChangedFiles.js'
 import { collectEligibleDirectoryFiles } from './CommitMasterDirectoryFiles.js'
 import { ClipboardInterruptedError, CommitMasterError } from './CommitMasterErrors.js'
-import { writeFilebundleMarkdown } from './CommitMasterFilebundleStorage.js'
+import { withFilebundleMarkdown } from './CommitMasterFilebundleStorage.js'
 import { resolveRepositoryRoot } from './CommitMasterRepository.js'
 import { readFilebundleOutput, type FilebundleOutput } from './CommitMasterSettings.js'
 
@@ -64,17 +64,22 @@ export const runFilebundleCommand = async (
       console.log(clipboardSuccessMessage('filebundle', files.length))
       return
    }
-   const filePath = await (delivery.writeMarkdownFile ?? writeFilebundleMarkdown)(root, content, signal)
-   throwIfCopyCancelled(signal)
-   try {
-      await (delivery.writeFileClipboard ?? copyFileToClipboard)(filePath, signal)
-   } catch (error) {
-      if (signal?.aborted || error instanceof ClipboardInterruptedError) throw error
-      throw new CommitMasterError(
-         `The Markdown file was saved at ${filePath}, but it could not be copied to the clipboard. ${error instanceof Error ? error.message : String(error)}`,
-         { cause: error }
-      )
+   const copyGeneratedFile = async (filePath: string): Promise<string> => {
+      throwIfCopyCancelled(signal)
+      try {
+         await (delivery.writeFileClipboard ?? copyFileToClipboard)(filePath, signal)
+      } catch (error) {
+         if (signal?.aborted || error instanceof ClipboardInterruptedError) throw error
+         throw new CommitMasterError(
+            `The Markdown file was saved at ${filePath}, but it could not be copied to the clipboard. ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
+         )
+      }
+      return filePath
    }
+   const filePath = delivery.writeMarkdownFile
+      ? await copyGeneratedFile(await delivery.writeMarkdownFile(root, content, signal))
+      : await withFilebundleMarkdown(root, content, signal, copyGeneratedFile)
    throwIfCopyCancelled(signal)
    console.log(`${files.length} files bundled.`)
    console.log(`Markdown file copied to clipboard: ${path.basename(filePath)}`)
