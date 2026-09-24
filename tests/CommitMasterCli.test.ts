@@ -6,16 +6,18 @@ import {
    mkdtemp,
    open,
    readFile,
+   readdir,
    realpath,
    rename,
    rm,
    symlink,
    unlink,
+   utimes,
    writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, it } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -66,7 +68,7 @@ import {
 } from '../dist/CommitMasterWorkspaces.js'
 import { copyFileToClipboard, copyToClipboard } from '../dist/CommitMasterClipboard.js'
 import { resolveLinuxClipboardHelper } from '../dist/CommitMasterLinuxClipboardHelper.js'
-import { writeFilebundleMarkdown } from '../dist/CommitMasterFilebundleStorage.js'
+import { withFilebundleMarkdown, writeFilebundleMarkdown } from '../dist/CommitMasterFilebundleStorage.js'
 import { readFilebundleOutput, saveFilebundleOutput } from '../dist/CommitMasterSettings.js'
 import { ensureGitRepository } from '../dist/CommitMasterBootstrap.js'
 import { InterruptionController } from '../dist/CommitMasterInterruption.js'
@@ -524,17 +526,178 @@ describe('filebundle', () => {
       })
       assert.equal(relative(storage, copiedFile).startsWith('..'), false)
       assert.equal(relative(folder, copiedFile).startsWith('..'), true)
-      assert.match(basename(copiedFile), /^filebundle-[a-z0-9-]+-\d{8}-\d{6}-[a-f0-9]{8}\.md$/)
+      assert.equal(basename(copiedFile), `filebundle-${basename(folder)}.md`)
       assert.equal(await readFile(copiedFile, 'utf8'), expected)
    })
 
    it('uses a safe fallback filename when the folder name cannot be sanitized', async () => {
       const storage = await createProject()
-      const selected = join(storage, '文档')
+      const selected = join(await createProject(), '文档')
       await mkdir(selected)
       const generated = await writeFilebundleMarkdown(selected, '# Bundle\n', undefined, storage)
-      assert.match(basename(generated), /^filebundle-\d{8}-\d{6}-[a-f0-9]{8}\.md$/)
+      assert.equal(basename(generated), 'filebundle.md')
       assert.equal(await readFile(generated, 'utf8'), '# Bundle\n')
+   })
+
+   it('replaces the previous bundle for repeated runs from the same folder', async () => {
+      const folder = await createProject()
+      const storage = await createProject()
+      const first = await writeFilebundleMarkdown(folder, 'first bundle\n', undefined, storage)
+      const second = await writeFilebundleMarkdown(folder, 'second bundle\n', undefined, storage)
+      assert.equal(first, second)
+      assert.equal(basename(second), `filebundle-${basename(folder)}.md`)
+      assert.equal(await readFile(second, 'utf8'), 'second bundle\n')
+      assert.deepEqual(await readdir(storage), [basename(second)])
+   })
+
+   it('keeps only the newest folder bundle and removes legacy generated files', async () => {
+      const storage = await createProject()
+      const firstFolder = await createProject()
+      const secondFolder = await createProject()
+      const first = await writeFilebundleMarkdown(firstFolder, 'first\n', undefined, storage)
+      const legacyA = join(storage, 'filebundle-project-a-20260923-120000-aabbccdd.md')
+      const legacyB = join(storage, 'filebundle-project-b-20260923-121000-11223344.md')
+      await writeFile(legacyA, 'old A\n')
+      await writeFile(legacyB, 'old B\n')
+      await writeFile(join(storage, 'something-else.md'), 'keep markdown\n')
+      await writeFile(join(storage, 'user-note.txt'), 'keep note\n')
+
+      const second = await writeFilebundleMarkdown(secondFolder, 'second\n', undefined, storage)
+      assert.equal(basename(second), `filebundle-${basename(secondFolder)}.md`)
+      assert.deepEqual((await readdir(storage)).sort(), [
+         basename(second), 'something-else.md', 'user-note.txt',
+      ].sort())
+      await assert.rejects(access(first))
+      await assert.rejects(access(legacyA))
+      await assert.rejects(access(legacyB))
+      assert.equal(await readFile(second, 'utf8'), 'second\n')
+   })
+
+   it('preserves the previous completed bundle when a replacement write fails', async () => {
+      const storage = await createProject()
+      const oldFolder = await createProject()
+      const newFolder = await createProject()
+      const previous = await writeFilebundleMarkdown(oldFolder, 'valid previous bundle\n', undefined, storage)
+      await assert.rejects(
+         writeFilebundleMarkdown(newFolder, 'replacement\n', undefined, storage,
+            async (temporary) => {
+               await writeFile(temporary, 'partial replacement\n')
+               throw new Error('simulated disk write failure')
+            }),
+         /Unable to write the generated Markdown file/
+      )
+      assert.equal(await readFile(previous, 'utf8'), 'valid previous bundle\n')
+      assert.deepEqual(await readdir(storage), [basename(previous)])
+   })
+
+   it('serializes competing cache writers across processes through file delivery', async () => {
+      const storage = await createProject()
+      const firstFolder = await createProject()
+      const secondFolder = await createProject()
+      await writeFile(join(storage, 'user-note.txt'), 'keep me\n')
+      const moduleUrl = new URL('../dist/CommitMasterFilebundleStorage.js', import.meta.url).href
+      const workerSource = `
+         import { readFile } from 'node:fs/promises'
+         const [moduleUrl, root, storage, content] = process.argv.slice(1)
+         const { withFilebundleMarkdown } = await import(moduleUrl)
+         process.stdout.write('STARTED\\n')
+         await withFilebundleMarkdown(root, content, undefined, async (filePath) => {
+            process.stdout.write('READY:' + filePath + '\\n')
+            await new Promise((resolve) => process.stdin.once('data', resolve))
+            if (await readFile(filePath, 'utf8') !== content) throw new Error('Delivered file changed')
+            process.stdout.write('USED:' + filePath + '\\n')
+         }, storage)
+      `
+      const startWorker = (root: string, content: string) => {
+         const child = spawn(process.execPath,
+            ['--input-type=module', '-e', workerSource, moduleUrl, root, storage, content],
+            { stdio: ['pipe', 'pipe', 'pipe'] })
+         let output = ''
+         let stderr = ''
+         const listeners: Array<() => void> = []
+         child.stdout.on('data', (chunk: Buffer) => {
+            output += chunk.toString()
+            for (const notify of listeners) notify()
+         })
+         child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+         const exited = new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => child.kill(), 15_000)
+            child.once('error', reject)
+            child.once('exit', (code) => {
+               clearTimeout(timeout)
+               code === 0 ? resolve() : reject(new Error(stderr || `worker exited ${code}`))
+            })
+         })
+         const waitFor = (marker: string): Promise<string> => Promise.race([
+            new Promise<string>((resolve) => {
+               const check = () => {
+                  const line = output.split('\n').find((value) => value.startsWith(marker))
+                  if (line) resolve(line.slice(marker.length))
+                  else listeners.push(check)
+               }
+               check()
+            }),
+            exited.then(() => { throw new Error(`worker exited before ${marker}`) }),
+         ])
+         return { child, exited, waitFor, output: () => output }
+      }
+
+      const first = startWorker(firstFolder, 'first process\n')
+      let second: ReturnType<typeof startWorker> | undefined
+      try {
+         const firstPath = await first.waitFor('READY:')
+         second = startWorker(secondFolder, 'second process\n')
+         await second.waitFor('STARTED')
+         await new Promise((resolve) => setTimeout(resolve, 150))
+         assert.doesNotMatch(second.output(), /READY:/)
+         assert.equal(await readFile(firstPath, 'utf8'), 'first process\n')
+         first.child.stdin.end('continue\n')
+         await first.waitFor('USED:')
+         await first.exited
+         const secondPath = await second.waitFor('READY:')
+         second.child.stdin.end('continue\n')
+         await second.waitFor('USED:')
+         await second.exited
+         assert.deepEqual((await readdir(storage)).sort(), [basename(secondPath), 'user-note.txt'].sort())
+         assert.equal(await readFile(secondPath, 'utf8'), 'second process\n')
+      } finally {
+         first.child.kill()
+         second?.child.kill()
+      }
+   })
+
+   it('recovers an abandoned stale cache lock and leaves no lock directory', async () => {
+      const storage = await createProject()
+      const folder = await createProject()
+      const lockDirectory = join(storage, '.filebundle.lock')
+      await mkdir(lockDirectory)
+      const oldTime = new Date(Date.now() - 60_000)
+      await utimes(lockDirectory, oldTime, oldTime)
+      const generated = await writeFilebundleMarkdown(folder, 'recovered\n', undefined, storage)
+      assert.equal(await readFile(generated, 'utf8'), 'recovered\n')
+      assert.deepEqual(await readdir(storage), [basename(generated)])
+   })
+
+   it('cancels while waiting for the cache lock without disturbing the current bundle', async () => {
+      const storage = await createProject()
+      const firstFolder = await createProject()
+      const secondFolder = await createProject()
+      let releaseDelivery!: () => void
+      let deliveryStarted!: () => void
+      const holdDelivery = new Promise<void>((resolve) => { releaseDelivery = resolve })
+      const enteredDelivery = new Promise<void>((resolve) => { deliveryStarted = resolve })
+      const first = withFilebundleMarkdown(firstFolder, 'first\n', undefined, async () => {
+         deliveryStarted()
+         await holdDelivery
+      }, storage)
+      await enteredDelivery
+      const controller = new AbortController()
+      const waiting = writeFilebundleMarkdown(secondFolder, 'second\n', controller.signal, storage)
+      controller.abort()
+      await assert.rejects(waiting, ClipboardInterruptedError)
+      releaseDelivery()
+      await first
+      assert.deepEqual(await readdir(storage), [`filebundle-${basename(firstFolder)}.md`])
    })
 
    it(
