@@ -1,6 +1,6 @@
 {
   "name": "commit-master",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Git utilities for per-file commits, historical scheduling, sharing changes, and safe project stashing.",
   "type": "module",
   "bin": {
@@ -66,14 +66,16 @@
     "developer tools"
   ],
   "dependencies": {
-    "officeparser": "^7.8.0"
+    "officeparser": "^7.8.0",
+    "proper-lockfile": "^4.1.2"
   },
   "optionalDependencies": {
-    "commit-master-clipboard-linux-x64": "0.1.9",
-    "commit-master-clipboard-linux-arm64": "0.1.9"
+    "commit-master-clipboard-linux-x64": "0.2.1",
+    "commit-master-clipboard-linux-arm64": "0.2.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
+    "@types/proper-lockfile": "^4.1.4",
     "typescript": "^5.7.0"
   },
   "prettier": {
