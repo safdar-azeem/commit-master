@@ -526,7 +526,7 @@ describe('filebundle', () => {
       })
       assert.equal(relative(storage, copiedFile).startsWith('..'), false)
       assert.equal(relative(folder, copiedFile).startsWith('..'), true)
-      assert.equal(basename(copiedFile), `filebundle-${basename(folder)}.md`)
+      assert.equal(basename(copiedFile), `filebundle-${basename(folder).toLowerCase()}.md`)
       assert.equal(await readFile(copiedFile, 'utf8'), expected)
    })
 
@@ -545,7 +545,7 @@ describe('filebundle', () => {
       const first = await writeFilebundleMarkdown(folder, 'first bundle\n', undefined, storage)
       const second = await writeFilebundleMarkdown(folder, 'second bundle\n', undefined, storage)
       assert.equal(first, second)
-      assert.equal(basename(second), `filebundle-${basename(folder)}.md`)
+      assert.equal(basename(second), `filebundle-${basename(folder).toLowerCase()}.md`)
       assert.equal(await readFile(second, 'utf8'), 'second bundle\n')
       assert.deepEqual(await readdir(storage), [basename(second)])
    })
@@ -563,7 +563,7 @@ describe('filebundle', () => {
       await writeFile(join(storage, 'user-note.txt'), 'keep note\n')
 
       const second = await writeFilebundleMarkdown(secondFolder, 'second\n', undefined, storage)
-      assert.equal(basename(second), `filebundle-${basename(secondFolder)}.md`)
+      assert.equal(basename(second), `filebundle-${basename(secondFolder).toLowerCase()}.md`)
       assert.deepEqual((await readdir(storage)).sort(), [
          basename(second), 'something-else.md', 'user-note.txt',
       ].sort())
@@ -614,10 +614,8 @@ describe('filebundle', () => {
             { stdio: ['pipe', 'pipe', 'pipe'] })
          let output = ''
          let stderr = ''
-         const listeners: Array<() => void> = []
          child.stdout.on('data', (chunk: Buffer) => {
             output += chunk.toString()
-            for (const notify of listeners) notify()
          })
          child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
          const exited = new Promise<void>((resolve, reject) => {
@@ -628,17 +626,32 @@ describe('filebundle', () => {
                code === 0 ? resolve() : reject(new Error(stderr || `worker exited ${code}`))
             })
          })
-         const waitFor = (marker: string): Promise<string> => Promise.race([
-            new Promise<string>((resolve) => {
-               const check = () => {
-                  const line = output.split('\n').find((value) => value.startsWith(marker))
-                  if (line) resolve(line.slice(marker.length))
-                  else listeners.push(check)
-               }
-               check()
-            }),
-            exited.then(() => { throw new Error(`worker exited before ${marker}`) }),
-         ])
+         const waitFor = (marker: string): Promise<string> => new Promise((resolve, reject) => {
+            const cleanup = () => {
+               child.stdout.off('data', check)
+               child.off('exit', onExit)
+               child.off('error', onError)
+            }
+            const check = () => {
+               const line = output.split('\n').find((value) => value.startsWith(marker))
+               if (line === undefined) return
+               cleanup()
+               resolve(line.slice(marker.length))
+            }
+            const onExit = () => {
+               cleanup()
+               reject(new Error(stderr || `worker exited before ${marker}`))
+            }
+            const onError = (error: Error) => {
+               cleanup()
+               reject(error)
+            }
+            child.stdout.on('data', check)
+            child.once('exit', onExit)
+            child.once('error', onError)
+            check()
+            if (child.exitCode !== null) onExit()
+         })
          return { child, exited, waitFor, output: () => output }
       }
 
@@ -697,7 +710,7 @@ describe('filebundle', () => {
       await assert.rejects(waiting, ClipboardInterruptedError)
       releaseDelivery()
       await first
-      assert.deepEqual(await readdir(storage), [`filebundle-${basename(firstFolder)}.md`])
+      assert.deepEqual(await readdir(storage), [`filebundle-${basename(firstFolder).toLowerCase()}.md`])
    })
 
    it(
