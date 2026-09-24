@@ -1,6 +1,6 @@
 {
   "name": "commit-master-clipboard-linux-arm64",
-  "version": "0.1.9",
+  "version": "0.2.1",
   "description": "Prebuilt Linux arm64 file clipboard helper for Commit Master",
   "os": ["linux"],
   "cpu": ["arm64"],
